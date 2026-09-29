@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from app.context.models import ContextChunk, ContextSourceType
+from app.context.models import (
+    ContextChunk,
+    ContextSourceType,
+)
 
 
 class ContextChunker:
@@ -35,10 +38,14 @@ class ContextChunker:
         path = Path(file_path)
 
         if chunk_lines <= 0:
-            raise ValueError("chunk_lines must be greater than zero.")
+            raise ValueError(
+                "chunk_lines must be greater than zero."
+            )
 
         if overlap_lines < 0:
-            raise ValueError("overlap_lines cannot be negative.")
+            raise ValueError(
+                "overlap_lines cannot be negative."
+            )
 
         if overlap_lines >= chunk_lines:
             raise ValueError(
@@ -52,6 +59,10 @@ class ContextChunker:
             )
         except OSError:
             return []
+
+        # PostgreSQL TEXT does not allow NUL characters.
+        # Remove them before creating context chunks.
+        content = content.replace("\x00", "")
 
         if not content.strip():
             return []
@@ -112,22 +123,32 @@ class ContextChunker:
     ) -> ContextSourceType:
         normalized_path = relative_path.lower()
 
-        if self._is_api_specification(normalized_path):
+        if self._is_api_specification(
+            normalized_path
+        ):
             return ContextSourceType.API_SPECIFICATION
 
-        if self._is_test_file(normalized_path):
+        if self._is_test_file(
+            normalized_path
+        ):
             return ContextSourceType.TEST
 
-        if self._is_automation_file(normalized_path):
+        if self._is_automation_file(
+            normalized_path
+        ):
             return ContextSourceType.AUTOMATION
 
         if language in self.SOURCE_TYPE_BY_LANGUAGE:
-            return self.SOURCE_TYPE_BY_LANGUAGE[language]
+            return self.SOURCE_TYPE_BY_LANGUAGE[
+                language
+            ]
 
         return ContextSourceType.SOURCE_CODE
 
     @staticmethod
-    def _is_api_specification(path: str) -> bool:
+    def _is_api_specification(
+        path: str,
+    ) -> bool:
         api_names = {
             "openapi.yaml",
             "openapi.yml",
@@ -140,7 +161,9 @@ class ContextChunker:
         return Path(path).name.lower() in api_names
 
     @staticmethod
-    def _is_test_file(path: str) -> bool:
+    def _is_test_file(
+        path: str,
+    ) -> bool:
         name = Path(path).name.lower()
 
         return (
@@ -151,7 +174,9 @@ class ContextChunker:
         )
 
     @staticmethod
-    def _is_automation_file(path: str) -> bool:
+    def _is_automation_file(
+        path: str,
+    ) -> bool:
         normalized = path.lower()
 
         automation_keywords = (

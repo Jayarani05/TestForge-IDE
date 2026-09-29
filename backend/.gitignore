@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment
+.env
+
+# TestForge backend
+backend/.pytest_cache/
+
+# Node
+node_modules/
+desktop/dist/
+desktop/dist-electron/
+
+# IDE
+.vscode/
+.idea/

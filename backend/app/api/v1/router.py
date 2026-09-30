@@ -33,6 +33,10 @@ from app.api.v1.self_healing import (
 from app.api.v1.analytics import router as analytics_router
 api_router = APIRouter()
 
+from app.api.v1.intelligent_testing import (
+    router as intelligent_testing_router,
+)
+
 api_router.include_router(health_router)
 api_router.include_router(database_router)
 api_router.include_router(repository_router)
@@ -69,3 +73,5 @@ api_router.include_router(
 )
 
 api_router.include_router(analytics_router)
+
+api_router.include_router(intelligent_testing_router)

@@ -36,6 +36,7 @@ api_router = APIRouter()
 from app.api.v1.intelligent_testing import (
     router as intelligent_testing_router,
 )
+from app.api.v1.history import router as history_router
 
 api_router.include_router(health_router)
 api_router.include_router(database_router)
@@ -75,3 +76,4 @@ api_router.include_router(
 api_router.include_router(analytics_router)
 
 api_router.include_router(intelligent_testing_router)
+api_router.include_router(history_router)

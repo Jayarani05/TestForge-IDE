@@ -1,4 +1,4 @@
-﻿import re
+import re
 
 from app.context.models import (
     ContextChunk,
@@ -202,6 +202,8 @@ class ContextRetriever:
             0.32,
         )
 
+        # Repository analysis implementation files receive
+        # an additional contextual bonus.
         if (
             "repository" in query_terms
             and (

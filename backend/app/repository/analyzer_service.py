@@ -1,6 +1,5 @@
-﻿from pathlib import Path
 import json
-import re
+from pathlib import Path
 
 from app.repository.analyzer import (
     ApiSpecificationInfo,
@@ -24,7 +23,7 @@ class RepositoryAnalyzerService:
         "build.gradle": "java-gradle",
         "build.gradle.kts": "java-gradle",
         "go.mod": "go",
-        "cargo.toml": "rust",
+        "Cargo.toml": "rust",
         "composer.json": "php",
     }
 
@@ -56,62 +55,277 @@ class RepositoryAnalyzerService:
             tree.files,
         )
 
-        analysis = RepositoryAnalysis(
-            repository_path=str(root),
-            project_name=root.name,
-            projects=projects,
-        )
-
-        analysis.languages = self._detect_languages(
+        languages = self._detect_languages(
             tree.files
         )
 
-        analysis.frameworks = self._detect_frameworks(
-            tree.files
+        frameworks = self._detect_frameworks(
+            root,
+            tree.files,
         )
 
-        analysis.dependencies = self._detect_dependencies(
-            tree.files
+        dependencies = self._detect_dependencies(
+            root,
+            tree.files,
         )
 
-        analysis.configuration_files = (
+        configuration_files = (
             self._detect_configuration_files(
                 tree.files
             )
         )
 
-        analysis.api_specifications = (
+        api_specifications = (
             self._detect_api_specifications(
                 tree.files
             )
         )
 
-        analysis.documentation_files = (
+        documentation_files = (
             self._detect_documentation_files(
                 tree.files
             )
         )
 
-        analysis.test_files = (
-            self._detect_test_files(
-                tree.files
-            )
+        test_files = self._detect_test_files(
+            tree.files
         )
 
-        analysis.automation_files = (
+        automation_files = (
             self._detect_automation_files(
                 tree.files
             )
         )
 
-        if len(projects) == 1:
-            analysis.project_type = projects[0].project_type
-        elif len(projects) > 1:
-            analysis.project_type = "multi-project"
-        else:
-            analysis.project_type = "unknown"
+        project_types = {
+            project.project_type
+            for project in projects
+        }
 
-        return analysis
+        if len(project_types) == 1:
+            project_type = next(iter(project_types))
+        elif len(project_types) > 1:
+            project_type = "multi-project"
+        else:
+            project_type = "unknown"
+
+        recommended_test_framework, framework_evidence = (
+            self._recommend_test_framework(
+                dependencies=dependencies,
+                frameworks=frameworks,
+                test_files=test_files,
+                automation_files=automation_files,
+            )
+        )
+        framework_support_evidence = (
+            self._framework_support_evidence(
+                dependencies=dependencies,
+                frameworks=frameworks,
+                test_files=test_files,
+                automation_files=automation_files,
+            )
+        )
+        supported_test_languages = self._supported_test_languages(
+            languages=languages,
+            project_type=project_type,
+        )
+        compatible_frameworks = {
+            framework: evidence
+            for framework, evidence in framework_support_evidence.items()
+            if self._framework_compatible_with_languages(
+                framework,
+                supported_test_languages,
+            )
+        }
+        if recommended_test_framework not in compatible_frameworks:
+            recommended_test_framework = None
+            framework_evidence = []
+
+        return RepositoryAnalysis(
+            repository_path=str(root),
+            project_name=root.name,
+            project_type=project_type,
+            projects=projects,
+            languages=languages,
+            frameworks=frameworks,
+            dependencies=dependencies,
+            configuration_files=configuration_files,
+            api_specifications=api_specifications,
+            documentation_files=documentation_files,
+            test_files=test_files,
+            automation_files=automation_files,
+            recommended_test_framework=recommended_test_framework,
+            framework_recommendation_evidence=framework_evidence,
+            supported_test_frameworks=list(compatible_frameworks),
+            framework_support_evidence=compatible_frameworks,
+            supported_test_languages=supported_test_languages,
+        )
+
+    @staticmethod
+    def _framework_support_evidence(
+        *,
+        dependencies: list[DependencyInfo],
+        frameworks: list[str],
+        test_files: list[TestFileInfo],
+        automation_files: list[AutomationFileInfo],
+    ) -> dict[str, list[str]]:
+        evidence: dict[str, list[str]] = {}
+        supported_dependencies = {
+            "pytest": "pytest",
+            "playwright": "playwright",
+            "@playwright/test": "playwright",
+            "selenium": "selenium",
+            "selenium-webdriver": "selenium",
+        }
+        detected_frameworks = {
+            "Pytest": "pytest",
+            "Playwright": "playwright",
+            "Selenium": "selenium",
+        }
+
+        for dependency in dependencies:
+            framework = supported_dependencies.get(
+                dependency.name.lower()
+            )
+            if framework:
+                evidence.setdefault(framework, []).append(
+                    f"Declared dependency: {dependency.name}"
+                )
+
+        for detected_framework in frameworks:
+            framework = detected_frameworks.get(detected_framework)
+            if framework:
+                evidence.setdefault(framework, []).append(
+                    f"Detected configured framework: {detected_framework}"
+                )
+
+        for test_file in test_files:
+            if test_file.framework == "Pytest":
+                evidence.setdefault("pytest", []).append(
+                    "Existing test file: "
+                    + test_file.path.replace("\\", "/")
+                )
+
+        for automation_file in automation_files:
+            framework = {
+                "Playwright": "playwright",
+                "Selenium": "selenium",
+            }.get(automation_file.automation_type)
+            if framework:
+                evidence.setdefault(framework, []).append(
+                    "Existing automation file: "
+                    + automation_file.path.replace("\\", "/")
+                )
+
+        return evidence
+
+    @staticmethod
+    def _supported_test_languages(
+        *,
+        languages: list[str],
+        project_type: str,
+    ) -> list[str]:
+        supported = {
+            "Python",
+            "JavaScript",
+            "TypeScript",
+        }
+        detected = [language for language in languages if language in supported]
+
+        if not detected and project_type == "python":
+            detected.append("Python")
+        elif not detected and project_type == "node":
+            detected.append("JavaScript")
+
+        return detected
+
+    @staticmethod
+    def _framework_compatible_with_languages(
+        framework: str,
+        languages: list[str],
+    ) -> bool:
+        compatible_languages = {
+            "pytest": {"Python"},
+            "playwright": {"Python", "JavaScript", "TypeScript"},
+            "selenium": {"Python", "JavaScript", "TypeScript"},
+        }
+        return bool(
+            compatible_languages.get(framework, set()).intersection(languages)
+        )
+
+    @staticmethod
+    def _recommend_test_framework(
+        *,
+        dependencies: list[DependencyInfo],
+        frameworks: list[str],
+        test_files: list[TestFileInfo],
+        automation_files: list[AutomationFileInfo],
+    ) -> tuple[str | None, list[str]]:
+        configured: dict[str, list[str]] = {}
+        existing_tests: dict[str, list[str]] = {}
+
+        supported_dependencies = {
+            "pytest": "pytest",
+            "playwright": "playwright",
+            "@playwright/test": "playwright",
+            "selenium": "selenium",
+            "selenium-webdriver": "selenium",
+        }
+
+        for dependency in dependencies:
+            framework = supported_dependencies.get(
+                dependency.name.lower()
+            )
+            if framework:
+                configured.setdefault(framework, []).append(
+                    f"Declared dependency: {dependency.name}"
+                )
+
+        detected_frameworks = {
+            "Pytest": "pytest",
+            "Playwright": "playwright",
+            "Selenium": "selenium",
+        }
+        for detected_framework in frameworks:
+            framework = detected_frameworks.get(detected_framework)
+            if framework and framework not in configured:
+                configured.setdefault(framework, []).append(
+                    f"Detected configured framework: {detected_framework}"
+                )
+
+        for test_file in test_files:
+            if test_file.framework == "Pytest":
+                existing_tests.setdefault("pytest", []).append(
+                    "Existing test file: "
+                    + test_file.path.replace("\\", "/")
+                )
+
+        automation_frameworks = {
+            "Playwright": "playwright",
+            "Selenium": "selenium",
+        }
+        for automation_file in automation_files:
+            framework = automation_frameworks.get(
+                automation_file.automation_type
+            )
+            if framework:
+                existing_tests.setdefault(framework, []).append(
+                    "Existing automation file: "
+                    + automation_file.path.replace("\\", "/")
+                )
+
+        if len(existing_tests) == 1:
+            framework, evidence = next(iter(existing_tests.items()))
+            return framework, evidence
+
+        if len(existing_tests) > 1:
+            return None, []
+
+        if len(configured) == 1:
+            framework, evidence = next(iter(configured.items()))
+            return framework, evidence
+
+        return None, []
 
     def _detect_projects(
         self,
@@ -121,138 +335,136 @@ class RepositoryAnalyzerService:
         projects: dict[str, ProjectInfo] = {}
 
         for file in files:
-            file_name = file.name.lower()
+            marker_type = self.PROJECT_MARKERS.get(
+                file.name
+            )
 
-            if file_name not in self.PROJECT_MARKERS:
+            if marker_type is None:
                 continue
 
-            project_type = self.PROJECT_MARKERS[file_name]
             file_path = Path(file.path)
 
             try:
-                relative_parent = file_path.parent.relative_to(root)
+                project_path = file_path.parent.relative_to(root)
             except ValueError:
                 continue
 
-            if str(relative_parent) == ".":
-                project_path = root
+            if str(project_path) == ".":
                 project_name = root.name
-                relative_path = "."
+                project_relative_path = "."
             else:
-                project_path = root / relative_parent
                 project_name = project_path.name
-                relative_path = str(relative_parent)
+                project_relative_path = str(
+                    project_path
+                )
 
-            key = str(project_path).lower()
+            key = str(project_path)
 
             if key not in projects:
                 projects[key] = ProjectInfo(
                     name=project_name,
-                    path=relative_path,
-                    project_type=project_type,
+                    path=project_relative_path,
+                    project_type=marker_type,
+                    languages=[],
+                    frameworks=[],
+                    dependency_files=[],
                 )
 
-            project = projects[key]
-
-            if file.relative_path not in project.dependency_files:
-                project.dependency_files.append(file.relative_path)
-
-            file_language = file.language
-
-            if file_language and file_language not in project.languages:
-                project.languages.append(file_language)
-
-            if file_name == "package.json":
-                project.frameworks.extend(
-                    framework
-                    for framework in self._frameworks_from_package_json(
-                        file_path
-                    )
-                    if framework not in project.frameworks
+            projects[key].dependency_files.append(
+                str(
+                    Path(file.relative_path)
                 )
+            )
 
-            elif file_name == "requirements.txt":
-                project.frameworks.extend(
-                    framework
-                    for framework in self._frameworks_from_requirements(
-                        file_path
-                    )
-                    if framework not in project.frameworks
-                )
+        return list(projects.values())
 
-            elif file_name == "pom.xml":
-                project.frameworks.extend(
-                    framework
-                    for framework in self._frameworks_from_pom(
-                        file_path
-                    )
-                    if framework not in project.frameworks
-                )
+    def _detect_languages(
+        self,
+        files,
+    ) -> list[str]:
+        languages: set[str] = set()
 
-        return sorted(
-            projects.values(),
-            key=lambda project: project.path,
-        )
-
-    def _detect_languages(self, files) -> list[str]:
-        ignored_types = {
-            "Documentation",
-            "Docker",
-            "Docker Compose",
-            "Alembic",
-            "Node.js",
-            "Maven",
-            "Gradle",
-        }
-
-        languages = {
-            file.language
-            for file in files
-            if file.language
-            and file.language not in ignored_types
-        }
+        for file in files:
+            if file.language is not None:
+                if file.language in {
+                    "Python",
+                    "Java",
+                    "JavaScript",
+                    "TypeScript",
+                    "C",
+                    "C++",
+                    "C#",
+                    "Go",
+                    "Rust",
+                    "PHP",
+                    "Ruby",
+                    "Kotlin",
+                    "Swift",
+                    "HTML",
+                    "CSS",
+                    "SCSS",
+                    "SQL",
+                    "Shell",
+                    "Batch",
+                    "PowerShell",
+                    "JSON",
+                    "XML",
+                    "YAML",
+                    "Markdown",
+                }:
+                    languages.add(file.language)
 
         return sorted(languages)
 
-    def _detect_frameworks(self, files) -> list[str]:
+    def _detect_frameworks(
+        self,
+        root: Path,
+        files,
+    ) -> list[str]:
         frameworks: set[str] = set()
 
         for file in files:
-            file_name = file.name.lower()
             file_path = Path(file.path)
 
-            if file_name == "package.json":
+            if file.name == "package.json":
                 frameworks.update(
-                    self._frameworks_from_package_json(
+                    self._detect_node_frameworks(
                         file_path
                     )
                 )
 
-            elif file_name == "requirements.txt":
+            elif file.name == "requirements.txt":
                 frameworks.update(
-                    self._frameworks_from_requirements(
+                    self._detect_python_frameworks(
                         file_path
                     )
                 )
 
-            elif file_name == "pom.xml":
+            elif file.name == "pyproject.toml":
                 frameworks.update(
-                    self._frameworks_from_pom(
+                    self._detect_python_frameworks(
+                        file_path
+                    )
+                )
+
+            elif file.name == "pom.xml":
+                frameworks.update(
+                    self._detect_java_frameworks(
                         file_path
                     )
                 )
 
         return sorted(frameworks)
 
-    def _frameworks_from_package_json(
+    def _detect_node_frameworks(
         self,
-        file_path: Path,
+        path: Path,
     ) -> set[str]:
         frameworks: set[str] = set()
 
         try:
             data = json.loads(
-                file_path.read_text(
+                path.read_text(
                     encoding="utf-8",
                     errors="ignore",
                 )
@@ -263,7 +475,7 @@ class RepositoryAnalyzerService:
         ):
             return frameworks
 
-        dependencies = {}
+        dependencies: dict[str, object] = {}
 
         dependencies.update(
             data.get("dependencies", {})
@@ -273,68 +485,84 @@ class RepositoryAnalyzerService:
             data.get("devDependencies", {})
         )
 
-        patterns = {
-            "react": "React",
-            "next": "Next.js",
-            "vue": "Vue",
-            "angular": "Angular",
-            "express": "Express",
-            "@nestjs/core": "NestJS",
-            "vite": "Vite",
-            "playwright": "Playwright",
-            "selenium": "Selenium",
-            "electron": "Electron",
-        }
+        dependency_names = set(
+            dependencies.keys()
+        )
 
-        for dependency in dependencies:
-            dependency_lower = dependency.lower()
+        if "react" in dependency_names:
+            frameworks.add("React")
 
-            for keyword, framework in patterns.items():
-                if (
-                    dependency_lower == keyword
-                    or keyword in dependency_lower
-                ):
-                    frameworks.add(framework)
+        if "next" in dependency_names:
+            frameworks.add("Next.js")
+
+        if "vue" in dependency_names:
+            frameworks.add("Vue")
+
+        if "@angular/core" in dependency_names:
+            frameworks.add("Angular")
+
+        if "express" in dependency_names:
+            frameworks.add("Express")
+
+        if "@nestjs/core" in dependency_names:
+            frameworks.add("NestJS")
+
+        if "vite" in dependency_names:
+            frameworks.add("Vite")
+
+        if "@playwright/test" in dependency_names:
+            frameworks.add("Playwright")
+
+        if "selenium-webdriver" in dependency_names:
+            frameworks.add("Selenium")
+
+        if "electron" in dependency_names:
+            frameworks.add("Electron")
 
         return frameworks
 
-    def _frameworks_from_requirements(
+    def _detect_python_frameworks(
         self,
-        file_path: Path,
+        path: Path,
     ) -> set[str]:
         frameworks: set[str] = set()
 
         try:
-            content = file_path.read_text(
+            content = path.read_text(
                 encoding="utf-8",
                 errors="ignore",
             ).lower()
         except OSError:
             return frameworks
 
-        patterns = {
-            "fastapi": "FastAPI",
-            "flask": "Flask",
-            "django": "Django",
-            "pytest": "Pytest",
-            "selenium": "Selenium",
-            "playwright": "Playwright",
-        }
+        if "fastapi" in content:
+            frameworks.add("FastAPI")
 
-        for keyword, framework in patterns.items():
-            if keyword in content:
-                frameworks.add(framework)
+        if "flask" in content:
+            frameworks.add("Flask")
+
+        if "django" in content:
+            frameworks.add("Django")
+
+        if "pytest" in content:
+            frameworks.add("Pytest")
+
+        if "selenium" in content:
+            frameworks.add("Selenium")
+
+        if "playwright" in content:
+            frameworks.add("Playwright")
 
         return frameworks
 
-    def _frameworks_from_pom(
+    def _detect_java_frameworks(
         self,
-        file_path: Path,
+        path: Path,
     ) -> set[str]:
         frameworks: set[str] = set()
 
         try:
-            content = file_path.read_text(
+            content = path.read_text(
                 encoding="utf-8",
                 errors="ignore",
             ).lower()
@@ -354,51 +582,69 @@ class RepositoryAnalyzerService:
 
     def _detect_dependencies(
         self,
+        root: Path,
         files,
     ) -> list[DependencyInfo]:
         dependencies: list[DependencyInfo] = []
 
         for file in files:
-            file_name = file.name.lower()
+            path = Path(file.path)
 
-            if file_name == "requirements.txt":
-                dependencies.extend(
-                    self._parse_requirements(
-                        Path(file.path)
-                    )
+            if file.name == "requirements.txt":
+                parsed = self._parse_requirements(
+                    path
                 )
 
-            elif file_name == "package.json":
-                dependencies.extend(
-                    self._parse_package_json(
-                        Path(file.path)
+                for name, version in parsed:
+                    dependencies.append(
+                        DependencyInfo(
+                            name=name,
+                            version=version,
+                            source_file=str(path),
+                        )
                     )
+
+            elif file.name == "package.json":
+                parsed = self._parse_package_json(
+                    path
                 )
+
+                for name, version in parsed:
+                    dependencies.append(
+                        DependencyInfo(
+                            name=name,
+                            version=version,
+                            source_file=str(path),
+                        )
+                    )
 
         return dependencies
 
     def _parse_requirements(
         self,
-        file_path: Path,
-    ) -> list[DependencyInfo]:
-        dependencies: list[DependencyInfo] = []
+        path: Path,
+    ) -> list[tuple[str, str | None]]:
+        dependencies: list[
+            tuple[str, str | None]
+        ] = []
 
         try:
-            content = file_path.read_text(
+            lines = path.read_text(
                 encoding="utf-8",
                 errors="ignore",
-            )
+            ).splitlines()
         except OSError:
             return dependencies
 
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
+        for line in lines:
+            line = line.strip()
 
-            # Ignore empty lines and comments.
-            if not line or line.startswith("#"):
+            if not line:
                 continue
 
-            # Ignore pip options and include/constraint directives.
+            if line.startswith("#"):
+                continue
+
             if line.startswith(
                 (
                     "-r ",
@@ -409,48 +655,70 @@ class RepositoryAnalyzerService:
                     "--extra-index-url ",
                     "--find-links ",
                     "--trusted-host ",
-                    "--no-index",
                 )
             ):
                 continue
 
-            # Ignore direct URL / VCS requirements.
             if line.startswith(
                 (
                     "http://",
                     "https://",
                     "git+",
-                    "svn+",
-                    "hg+",
-                    "bzr+",
                 )
             ):
                 continue
 
-            # Remove inline comments.
-            line = line.split(" #", 1)[0].strip()
+            dependency_name = line
+            dependency_version: str | None = None
 
-            match = re.match(
-                r"^([A-Za-z0-9][A-Za-z0-9_.-]*)"
-                r"(?:\s*(===|==|!=|~=|>=|<=|>|<)"
-                r"\s*([^\s;,]+))?",
-                line,
+            for operator in (
+                "===",
+                "==",
+                ">=",
+                "<=",
+                "~=",
+                "!=",
+                ">",
+                "<",
+            ):
+                if operator in line:
+                    (
+                        dependency_name,
+                        dependency_version,
+                    ) = line.split(
+                        operator,
+                        1,
+                    )
+
+                    dependency_name = (
+                        dependency_name.strip()
+                    )
+
+                    dependency_version = (
+                        dependency_version.strip()
+                    )
+
+                    break
+
+            dependency_name = (
+                dependency_name.strip()
             )
 
-            if match is None:
+            if not dependency_name:
                 continue
 
-            name = match.group(1).strip()
-            version = match.group(3)
-
-            if not name:
+            if dependency_name.startswith(
+                (
+                    "-",
+                    "#",
+                )
+            ):
                 continue
 
             dependencies.append(
-                DependencyInfo(
-                    name=name,
-                    version=version,
-                    source_file=str(file_path),
+                (
+                    dependency_name,
+                    dependency_version,
                 )
             )
 
@@ -458,13 +726,15 @@ class RepositoryAnalyzerService:
 
     def _parse_package_json(
         self,
-        file_path: Path,
-    ) -> list[DependencyInfo]:
-        dependencies = []
+        path: Path,
+    ) -> list[tuple[str, str | None]]:
+        dependencies: list[
+            tuple[str, str | None]
+        ] = []
 
         try:
             data = json.loads(
-                file_path.read_text(
+                path.read_text(
                     encoding="utf-8",
                     errors="ignore",
                 )
@@ -478,18 +748,29 @@ class RepositoryAnalyzerService:
         for section in (
             "dependencies",
             "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
         ):
-            section_data = data.get(
+            section_dependencies = data.get(
                 section,
-                {}
+                {},
             )
 
-            for name, version in section_data.items():
+            if not isinstance(
+                section_dependencies,
+                dict,
+            ):
+                continue
+
+            for name, version in (
+                section_dependencies.items()
+            ):
                 dependencies.append(
-                    DependencyInfo(
-                        name=name,
-                        version=str(version),
-                        source_file=str(file_path),
+                    (
+                        str(name),
+                        str(version)
+                        if version is not None
+                        else None,
                     )
                 )
 
@@ -499,35 +780,49 @@ class RepositoryAnalyzerService:
         self,
         files,
     ) -> list[ConfigurationFileInfo]:
-        configurations = []
+        configurations: list[
+            ConfigurationFileInfo
+        ] = []
 
         configuration_map = {
             ".env": "Environment",
             ".env.example": "Environment",
-            "application.properties": "Application Configuration",
-            "application.yml": "Application Configuration",
-            "application.yaml": "Application Configuration",
+            ".env.local": "Environment",
+            ".env.development": "Environment",
+            ".env.production": "Environment",
             "alembic.ini": "Alembic",
-            "docker-compose.yml": "Docker Compose",
-            "docker-compose.yaml": "Docker Compose",
+            "eslint.config.js": "ESLint",
+            ".eslintrc": "ESLint",
+            ".eslintrc.json": "ESLint",
+            ".eslintrc.js": "ESLint",
+            "tsconfig.json": "TypeScript",
             "vite.config.ts": "Vite",
             "vite.config.js": "Vite",
-            "tsconfig.json": "TypeScript",
-            "eslint.config.js": "ESLint",
+            "webpack.config.js": "Webpack",
+            "babel.config.js": "Babel",
+            "pytest.ini": "Pytest",
+            "tox.ini": "Tox",
+            "docker-compose.yml": "Docker Compose",
+            "docker-compose.yaml": "Docker Compose",
+            "Dockerfile": "Docker",
         }
 
         for file in files:
-            configuration_type = configuration_map.get(
-                file.name.lower()
+            configuration_type = (
+                configuration_map.get(
+                    file.name
+                )
             )
 
-            if configuration_type:
-                configurations.append(
-                    ConfigurationFileInfo(
-                        path=file.relative_path,
-                        configuration_type=configuration_type,
-                    )
+            if configuration_type is None:
+                continue
+
+            configurations.append(
+                ConfigurationFileInfo(
+                    path=file.relative_path,
+                    configuration_type=configuration_type,
                 )
+            )
 
         return configurations
 
@@ -535,29 +830,35 @@ class RepositoryAnalyzerService:
         self,
         files,
     ) -> list[ApiSpecificationInfo]:
-        specifications = []
+        specifications: list[
+            ApiSpecificationInfo
+        ] = []
 
-        api_file_names = {
-            "openapi.json": "OpenAPI",
+        api_specification_map = {
             "openapi.yaml": "OpenAPI",
             "openapi.yml": "OpenAPI",
-            "swagger.json": "Swagger",
+            "openapi.json": "OpenAPI",
             "swagger.yaml": "Swagger",
             "swagger.yml": "Swagger",
+            "swagger.json": "Swagger",
         }
 
         for file in files:
-            specification_type = api_file_names.get(
-                file.name.lower()
+            specification_type = (
+                api_specification_map.get(
+                    file.name
+                )
             )
 
-            if specification_type:
-                specifications.append(
-                    ApiSpecificationInfo(
-                        path=file.relative_path,
-                        specification_type=specification_type,
-                    )
+            if specification_type is None:
+                continue
+
+            specifications.append(
+                ApiSpecificationInfo(
+                    path=file.relative_path,
+                    specification_type=specification_type,
                 )
+            )
 
         return specifications
 
@@ -565,27 +866,37 @@ class RepositoryAnalyzerService:
         self,
         files,
     ) -> list[DocumentationFileInfo]:
-        documentation = []
-
-        documentation_names = {
-            "readme": "README",
-            "readme.md": "README",
-            "readme.txt": "README",
-            "contributing.md": "Contributing",
-            "changelog.md": "Changelog",
-            "architecture.md": "Architecture",
-        }
+        documentation: list[
+            DocumentationFileInfo
+        ] = []
 
         for file in files:
-            documentation_type = documentation_names.get(
-                file.name.lower()
-            )
-
-            if documentation_type:
+            if file.name.lower() in {
+                "readme",
+                "readme.md",
+                "readme.txt",
+                "readme.rst",
+            }:
                 documentation.append(
                     DocumentationFileInfo(
                         path=file.relative_path,
-                        documentation_type=documentation_type,
+                        documentation_type="README",
+                    )
+                )
+
+            elif file.extension == ".md":
+                documentation.append(
+                    DocumentationFileInfo(
+                        path=file.relative_path,
+                        documentation_type="Markdown",
+                    )
+                )
+
+            elif file.extension == ".rst":
+                documentation.append(
+                    DocumentationFileInfo(
+                        path=file.relative_path,
+                        documentation_type="reStructuredText",
                     )
                 )
 
@@ -595,33 +906,43 @@ class RepositoryAnalyzerService:
         self,
         files,
     ) -> list[TestFileInfo]:
-        test_files = []
+        tests: list[TestFileInfo] = []
 
         for file in files:
-            path = file.relative_path.lower()
-            name = file.name.lower()
+            lower_path = file.relative_path.lower()
+            lower_name = file.name.lower()
 
-            if not (
-                "test" in name
-                or "tests" in path
-                or "__tests__" in path
-                or "spec" in name
-            ):
+            is_test = (
+                lower_name.startswith("test_")
+                or lower_name.endswith(
+                    "_test.py"
+                )
+                or ".test." in lower_name
+                or ".spec." in lower_name
+                or "\\tests\\" in lower_path
+                or "/tests/" in lower_path
+                or "\\test\\" in lower_path
+                or "/test/" in lower_path
+            )
+
+            if not is_test:
                 continue
 
-            framework = None
+            framework: str | None = None
 
             if file.language == "Python":
                 framework = "Pytest"
+
             elif file.language in {
                 "JavaScript",
                 "TypeScript",
             }:
-                framework = "JavaScript Testing"
-            elif file.language == "Java":
-                framework = "Java Testing"
+                framework = "JavaScript Test"
 
-            test_files.append(
+            elif file.language == "Java":
+                framework = "JUnit"
+
+            tests.append(
                 TestFileInfo(
                     path=file.relative_path,
                     framework=framework,
@@ -629,44 +950,67 @@ class RepositoryAnalyzerService:
                 )
             )
 
-        return test_files
+        return tests
 
     def _detect_automation_files(
         self,
         files,
     ) -> list[AutomationFileInfo]:
-        automation_files = []
+        automation: list[
+            AutomationFileInfo
+        ] = []
 
         for file in files:
-            path = file.relative_path.lower()
+            lower_name = file.name.lower()
+            lower_path = file.relative_path.lower()
 
-            if "playwright" in path:
-                automation_files.append(
+            if any(
+                keyword in lower_name
+                for keyword in (
+                    "playwright",
+                    "selenium",
+                    "webdriver",
+                )
+            ):
+                automation.append(
                     AutomationFileInfo(
                         path=file.relative_path,
-                        automation_type="Playwright",
+                        automation_type=self._detect_automation_type(
+                            lower_name
+                        ),
                     )
                 )
-            elif "selenium" in path:
-                automation_files.append(
-                    AutomationFileInfo(
-                        path=file.relative_path,
-                        automation_type="Selenium",
-                    )
+                continue
+
+            if any(
+                keyword in lower_path
+                for keyword in (
+                    "\\e2e\\",
+                    "/e2e/",
+                    "\\automation\\",
+                    "/automation/",
                 )
-            elif "cypress" in path:
-                automation_files.append(
+            ):
+                automation.append(
                     AutomationFileInfo(
                         path=file.relative_path,
-                        automation_type="Cypress",
-                    )
-                )
-            elif "automation" in path:
-                automation_files.append(
-                    AutomationFileInfo(
-                        path=file.relative_path,
-                        automation_type="Automation",
+                        automation_type="End-to-End",
                     )
                 )
 
-        return automation_files
+        return automation
+
+    def _detect_automation_type(
+        self,
+        file_name: str,
+    ) -> str:
+        if "playwright" in file_name:
+            return "Playwright"
+
+        if "selenium" in file_name:
+            return "Selenium"
+
+        if "webdriver" in file_name:
+            return "WebDriver"
+
+        return "Automation"

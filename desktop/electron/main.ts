@@ -1,21 +1,50 @@
-import {
-  app,
-  BrowserWindow,
-  ipcMain,
-  dialog,
-} from "electron";
-
+import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { executeCommand } from "./terminal";
 
-const __dirname = path.dirname(
-  fileURLToPath(import.meta.url)
-);
+const __dirname = path.join(app.getAppPath(), "dist-electron");
 
 let win: BrowserWindow | null = null;
+let terminalProcess: ChildProcessWithoutNullStreams | null = null;
+
+const IGNORED_DIRECTORIES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  "node_modules",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".tox",
+  ".idea",
+  ".vscode",
+  ".cache",
+  ".parcel-cache",
+  ".turbo",
+  ".vite",
+  "dist",
+  "dist-electron",
+  "build",
+  "coverage",
+  ".next",
+  ".nuxt",
+  "target",
+  "out",
+  "bin",
+  "obj",
+]);
+
+function stopTerminal() {
+  if (!terminalProcess) return;
+  terminalProcess.kill();
+  terminalProcess = null;
+}
 
 function createWindow() {
   win = new BrowserWindow({
@@ -28,7 +57,7 @@ function createWindow() {
     webPreferences: {
       preload: path.join(
         __dirname,
-        "preload.mjs"
+        "preload.js"
       ),
       contextIsolation: true,
       nodeIntegration: false,
@@ -51,51 +80,52 @@ function createWindow() {
 }
 
 async function buildTree(
-  folder: string
-): Promise<any[]> {
+  folder: string,
+): Promise<
+  {
+    name: string;
+    path: string;
+    type: "file" | "directory";
+  }[]
+> {
   const entries = await fs.readdir(
     folder,
-    { withFileTypes: true }
+    { withFileTypes: true },
   );
 
-  const nodes = await Promise.all(
-    entries.map(async (entry) => {
-      const fullPath = path.join(
-        folder,
-        entry.name
-      );
-
-      return {
-        name: entry.name,
-        path: fullPath,
-        isDirectory:
-          entry.isDirectory(),
-
-        children: entry.isDirectory()
-          ? await buildTree(fullPath)
-          : [],
-      };
-    })
-  );
+  const nodes = entries
+    .filter(
+      (entry) =>
+        !entry.isSymbolicLink() &&
+        !(
+          entry.isDirectory() &&
+          IGNORED_DIRECTORIES.has(entry.name)
+        ),
+    )
+    .map((entry) => ({
+      name: entry.name,
+      path: path.join(folder, entry.name),
+      type: entry.isDirectory()
+        ? "directory" as const
+        : "file" as const,
+    }));
 
   return nodes.sort((a, b) => {
     if (
-      a.isDirectory &&
-      !b.isDirectory
+      a.type === "directory" &&
+      b.type !== "directory"
     ) {
       return -1;
     }
 
     if (
-      !a.isDirectory &&
-      b.isDirectory
+      a.type !== "directory" &&
+      b.type === "directory"
     ) {
       return 1;
     }
 
-    return a.name.localeCompare(
-      b.name
-    );
+    return a.name.localeCompare(b.name);
   });
 }
 
@@ -151,6 +181,37 @@ ipcMain.handle(
   }
 );
 
+ipcMain.handle("fs:createFile", async (_, filePath: string) => {
+  await fs.writeFile(filePath, "", { flag: "wx" });
+  return true;
+});
+
+ipcMain.handle("fs:createDirectory", async (_, folderPath: string) => {
+  await fs.mkdir(folderPath);
+  return true;
+});
+
+ipcMain.handle("fs:rename", async (_, oldPath: string, newPath: string) => {
+  await fs.rename(oldPath, newPath);
+  return true;
+});
+
+ipcMain.handle("fs:delete", async (_, targetPath: string) => {
+  await fs.rm(targetPath, { recursive: true, force: false });
+  return true;
+});
+
+ipcMain.handle("fs:ensureOutputs", async (_, workspacePath: string) => {
+  const outputsPath = path.join(workspacePath, "outputs");
+  await fs.mkdir(outputsPath, { recursive: true });
+  await Promise.all(
+    ["tests", "automation", "execution", "reports", "repairs", "screenshots", "exports"].map(
+      (folder) => fs.mkdir(path.join(outputsPath, folder), { recursive: true }),
+    ),
+  );
+  return outputsPath;
+});
+
 ipcMain.handle(
   "terminal:execute",
   async (
@@ -164,6 +225,42 @@ ipcMain.handle(
     );
   }
 );
+
+ipcMain.handle("terminal:start", async (_, cwd: string) => {
+  const workspace = await fs.stat(cwd);
+  if (!workspace.isDirectory()) throw new Error("Terminal workspace must be a directory.");
+  stopTerminal();
+
+  const shell = process.platform === "win32"
+    ? spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NoExit"], { cwd, windowsHide: true })
+    : spawn("bash", ["--noprofile", "--norc", "-i"], { cwd });
+  terminalProcess = shell;
+
+  shell.stdout.on("data", (chunk: Buffer) => {
+    win?.webContents.send("terminal:output", chunk.toString());
+  });
+  shell.stderr.on("data", (chunk: Buffer) => {
+    win?.webContents.send("terminal:output", chunk.toString());
+  });
+  shell.on("error", (error) => {
+    win?.webContents.send("terminal:output", `\r\n${error.message}\r\n`);
+  });
+  shell.on("close", (code) => {
+    if (terminalProcess === shell) terminalProcess = null;
+    win?.webContents.send("terminal:output", `\r\n[Shell exited with code ${code ?? 0}]\r\n`);
+    win?.webContents.send("terminal:exit");
+  });
+  return true;
+});
+
+ipcMain.handle("terminal:write", async (_, input: string) => {
+  if (!terminalProcess || terminalProcess.killed || !terminalProcess.stdin.writable) {
+    throw new Error("The terminal shell is not running.");
+  }
+  terminalProcess.stdin.write(input);
+});
+
+ipcMain.handle("terminal:stop", () => stopTerminal());
 
 app.whenReady().then(() => {
   createWindow();
@@ -182,6 +279,7 @@ app.whenReady().then(() => {
 app.on(
   "window-all-closed",
   () => {
+    stopTerminal();
     if (
       process.platform !== "darwin"
     ) {

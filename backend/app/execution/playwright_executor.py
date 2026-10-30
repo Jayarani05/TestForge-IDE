@@ -1,15 +1,21 @@
+import json
+import shutil
 from pathlib import Path
 
 from app.execution.models import (
     ExecutionFramework,
     ExecutionResult,
-    ExecutionStatus,
 )
 from app.execution.process_manager import ProcessManager
+from app.execution.validation import (
+    execution_error_result,
+    resolve_test_file,
+    result_from_process,
+)
 
 
 class PlaywrightExecutor:
-    """Executes Playwright tests through the Playwright CLI."""
+    """Executes a selected Playwright test using the project's local runner."""
 
     framework = ExecutionFramework.PLAYWRIGHT
 
@@ -25,101 +31,109 @@ class PlaywrightExecutor:
         file_path: str,
         timeout_seconds: int = 120,
         args: list[str] | None = None,
+        measure_coverage: bool = False,
     ) -> ExecutionResult:
-        repository = Path(repository_path).resolve()
-        test_file = Path(file_path)
+        repository, test_path, relative_path = resolve_test_file(
+            repository_path,
+            file_path,
+            self.framework,
+        )
+        if args:
+            raise ValueError("Additional Playwright runner options are not supported.")
 
-        if test_file.is_absolute():
+        project_root = self._find_project_root(repository, test_path)
+        if project_root is None:
             raise ValueError(
-                "Test file path must be relative to the repository."
+                "Selected Playwright test must belong to a project with package.json."
             )
 
-        test_path = (repository / test_file).resolve()
-
+        package_file = project_root / "package.json"
         try:
-            test_path.relative_to(repository)
-        except ValueError as exc:
-            raise ValueError(
-                "Test file path escapes the repository."
-            ) from exc
+            package_data = json.loads(package_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Playwright project package.json is invalid.") from exc
 
-        if not test_path.exists():
+        if not isinstance(package_data, dict):
+            raise ValueError("Playwright project package.json must contain an object.")
+        dependencies: dict[str, object] = {}
+        for field in ("dependencies", "devDependencies"):
+            field_dependencies = package_data.get(field, {})
+            if not isinstance(field_dependencies, dict):
+                raise ValueError(
+                    f"Playwright project package.json field {field} must be an object."
+                )
+            dependencies.update(field_dependencies)
+        configured = (
+            "@playwright/test" in dependencies
+            or "playwright" in dependencies
+            or any(project_root.glob("playwright.config.*"))
+        )
+        if not configured:
             raise ValueError(
-                f"Test file does not exist: {file_path}"
+                "No Playwright dependency or project configuration was detected."
             )
 
-        if not test_path.is_file():
-            raise ValueError(
-                f"Test path is not a file: {file_path}"
-            )
-
-        playwright_project = repository / "desktop"
-
-        if not playwright_project.exists():
-            raise ValueError(
-                f"Playwright project directory does not exist: "
-                f"{playwright_project}"
-            )
-
-        package_json = playwright_project / "package.json"
-
-        if not package_json.exists():
-            raise ValueError(
-                f"Playwright project does not contain package.json: "
-                f"{package_json}"
-            )
-
+        local_runner = (
+            project_root / "node_modules" / "@playwright" / "test" / "cli.js"
+        )
+        if not local_runner.is_file():
+            local_runner = project_root / "node_modules" / "playwright" / "cli.js"
         try:
-            relative_test_path = test_path.relative_to(
-                playwright_project
+            local_runner.resolve().relative_to(project_root.resolve())
+        except ValueError:
+            return execution_error_result(
+                repository,
+                relative_path,
+                self.framework,
+                "The local Playwright runner must be inside the selected project.",
+            )
+        node = shutil.which("node")
+        if not node or not local_runner.is_file():
+            return execution_error_result(
+                repository,
+                relative_path,
+                self.framework,
+                "The local Playwright runner is unavailable. Install it in this "
+                "project before running tests.",
             )
 
-            playwright_test_path = relative_test_path.as_posix()
-        except ValueError as exc:
-            raise ValueError(
-                "Playwright test file must be inside the "
-                "desktop project."
-            ) from exc
-
-        extra_args = args or []
-
-        command = [
-            "npx",
-            "playwright",
-            "test",
-            playwright_test_path,
-            *extra_args,
-        ]
-
-        # print("PLAYWRIGHT COMMAND:", command)
-        # print("PLAYWRIGHT CWD:", playwright_project)
-        # print("PLAYWRIGHT TEST EXISTS:", test_path.exists())
-        # print("PLAYWRIGHT TEST PATH:", test_path)
-        # print("PLAYWRIGHT RELATIVE PATH:", relative_test_path)
-
+        runner_test_path = test_path.relative_to(project_root).as_posix()
         process_result = await self.process_manager.run(
-            command=command,
-            cwd=str(playwright_project),
+            command=[
+                node,
+                str(local_runner),
+                "test",
+                runner_test_path,
+            ],
+            cwd=str(project_root),
             timeout_seconds=timeout_seconds,
         )
-
-        if process_result.timed_out:
-            status = ExecutionStatus.TIMEOUT
-        elif process_result.error:
-            status = ExecutionStatus.ERROR
-        elif process_result.exit_code == 0:
-            status = ExecutionStatus.PASSED
-        else:
-            status = ExecutionStatus.FAILED
-
-        return ExecutionResult(
-            repository_path=str(repository),
-            file_path=str(test_path.relative_to(repository)),
-            framework=self.framework,
-            status=status,
-            exit_code=process_result.exit_code,
-            stdout=process_result.stdout,
-            stderr=process_result.stderr,
-            duration_seconds=process_result.duration_seconds,
-            error=process_result.error,
+        result = result_from_process(
+            repository,
+            relative_path,
+            self.framework,
+            process_result,
         )
+        if measure_coverage:
+            return result.model_copy(
+                update={
+                    "coverage_error": (
+                        "Coverage measurement is not available for the Playwright "
+                        "runner configuration."
+                    )
+                }
+            )
+        return result
+
+    @staticmethod
+    def _find_project_root(
+        repository: Path,
+        test_path: Path,
+    ) -> Path | None:
+        for candidate in (test_path.parent, *test_path.parent.parents):
+            if candidate == repository.parent:
+                break
+            if candidate == repository or repository in candidate.parents:
+                if (candidate / "package.json").is_file():
+                    return candidate
+        return None

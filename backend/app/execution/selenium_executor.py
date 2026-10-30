@@ -1,15 +1,21 @@
+import importlib.util
+import re
 from pathlib import Path
 
 from app.execution.models import (
     ExecutionFramework,
     ExecutionResult,
-    ExecutionStatus,
 )
 from app.execution.process_manager import ProcessManager
+from app.execution.validation import (
+    execution_error_result,
+    resolve_test_file,
+)
+from app.execution.pytest_executor import PytestExecutor
 
 
 class SeleniumExecutor:
-    """Executes Selenium tests through the Python test runner."""
+    """Runs Python Selenium tests through pytest; it never starts a browser itself."""
 
     framework = ExecutionFramework.SELENIUM
 
@@ -18,6 +24,7 @@ class SeleniumExecutor:
         process_manager: ProcessManager | None = None,
     ) -> None:
         self.process_manager = process_manager or ProcessManager()
+        self.pytest_executor = PytestExecutor(self.process_manager)
 
     async def execute(
         self,
@@ -25,75 +32,84 @@ class SeleniumExecutor:
         file_path: str,
         timeout_seconds: int = 120,
         args: list[str] | None = None,
+        measure_coverage: bool = False,
     ) -> ExecutionResult:
-        repository = Path(repository_path).resolve()
-        test_file = Path(file_path)
-
-        if test_file.is_absolute():
-            raise ValueError(
-                "Test file path must be relative to the repository."
-            )
-
-        test_path = (repository / test_file).resolve()
-
-        try:
-            test_path.relative_to(repository)
-        except ValueError as exc:
-            raise ValueError(
-                "Test file path escapes the repository."
-            ) from exc
-
-        if not test_path.exists():
-            raise ValueError(
-                f"Test file does not exist: {file_path}"
-            )
-
-        if not test_path.is_file():
-            raise ValueError(
-                f"Test path is not a file: {file_path}"
-            )
-
-        extra_args = args or []
-
-        python_executable = Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
-
-        if not python_executable.exists():
-            raise ValueError(
-                f"Backend Python environment not found: {python_executable}"
+        repository, test_path, relative_path = resolve_test_file(
+            repository_path,
+            file_path,
+            self.framework,
         )
+        if importlib.util.find_spec("pytest") is None:
+            return execution_error_result(
+                repository,
+                relative_path,
+                self.framework,
+                "Pytest is not installed in the selected execution environment.",
+            )
+        if importlib.util.find_spec("selenium") is None:
+            return execution_error_result(
+                repository,
+                relative_path,
+                self.framework,
+                "Selenium is not installed in the selected execution environment.",
+            )
+        if not self._has_selenium_evidence(repository, test_path):
+            raise ValueError(
+                "No Selenium dependency or import evidence was found for this project."
+            )
 
-        command = [
-            str(python_executable),
-            str(test_path.relative_to(repository)),
-            *extra_args,
-        ]
-
-        process_result = await self.process_manager.run(
-            command=command,
-            cwd=str(repository),
+        result = await self.pytest_executor.execute(
+            repository_path=repository_path,
+            file_path=file_path,
             timeout_seconds=timeout_seconds,
+            args=args,
+            measure_coverage=measure_coverage,
+        )
+        return result.model_copy(
+            update={"framework": self.framework}
         )
 
-        if process_result.timed_out:
-            status = ExecutionStatus.TIMEOUT
+    @staticmethod
+    def _has_selenium_evidence(
+        repository: Path,
+        test_path: Path,
+    ) -> bool:
+        evidence_files = {
+            test_path,
+            *(
+                parent / "conftest.py"
+                for parent in (test_path.parent, *test_path.parent.parents)
+                if parent == repository or repository in parent.parents
+            ),
+        }
+        for parent in (test_path.parent, *test_path.parent.parents):
+            if parent == repository or repository in parent.parents:
+                evidence_files.update(
+                    parent / name
+                    for name in (
+                        "requirements.txt",
+                        "requirements-dev.txt",
+                        "pyproject.toml",
+                        "setup.py",
+                        "Pipfile",
+                    )
+                )
+            if parent == repository:
+                break
 
-        elif process_result.error:
-            status = ExecutionStatus.ERROR
-
-        elif process_result.exit_code == 0:
-            status = ExecutionStatus.PASSED
-
-        else:
-            status = ExecutionStatus.FAILED
-
-        return ExecutionResult(
-            repository_path=str(repository),
-            file_path=str(test_path.relative_to(repository)),
-            framework=self.framework,
-            status=status,
-            exit_code=process_result.exit_code,
-            stdout=process_result.stdout,
-            stderr=process_result.stderr,
-            duration_seconds=process_result.duration_seconds,
-            error=process_result.error,
-        )
+        for evidence_file in evidence_files:
+            if not evidence_file.is_file():
+                continue
+            try:
+                source = evidence_file.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            except OSError:
+                continue
+            if evidence_file in {test_path} or evidence_file.name == "conftest.py":
+                if re.search(r"\b(?:from|import)\s+selenium\b", source):
+                    return True
+            elif re.search(r"\bselenium(?:-webdriver)?\b", source, re.IGNORECASE):
+                return True
+        return False

@@ -29,32 +29,14 @@ import {
   saveFile,
 } from "../../services/fileSystem";
 
-interface EditorProps {
-  filePath?: string | null;
-  fileName?: string | null;
-  content?: string;
-  language?: string;
-  readOnly?: boolean;
-  onChange?: (
-    value: string,
-  ) => void;
-  onSave?: (
-    path: string,
-    content: string,
-  ) => Promise<void> | void;
-
-  [key: string]: unknown;
-}
-
 interface FileOpenDetail {
   path: string;
   name?: string;
   language?: string;
+  content?: string;
 }
 
-export default function Editor(
-  _props: EditorProps,
-) {
+export default function Editor() {
   const {
     tabs,
     activeTabId,
@@ -104,9 +86,9 @@ export default function Editor(
 
       try {
         const content =
-          await readFile(
-            detail.path,
-          );
+          typeof detail.content === "string"
+            ? detail.content
+            : await readFile(detail.path);
 
         editorStore.openFile({
           id: detail.path,
@@ -146,37 +128,6 @@ export default function Editor(
       );
     };
   }, []);
-
-  /*
-   * Support Ctrl+S globally.
-   */
-  useEffect(() => {
-    const handleKeyboard =
-      (event: KeyboardEvent) => {
-        if (
-          (event.ctrlKey ||
-            event.metaKey) &&
-          event.key.toLowerCase() ===
-            "s"
-        ) {
-          event.preventDefault();
-
-          void saveActiveFile();
-        }
-      };
-
-    window.addEventListener(
-      "keydown",
-      handleKeyboard,
-    );
-
-    return () => {
-      window.removeEventListener(
-        "keydown",
-        handleKeyboard,
-      );
-    };
-  }, [activeTabId, tabs]);
 
   /*
    * Save active editor file.
@@ -236,6 +187,36 @@ export default function Editor(
       },
       [activeTab],
     );
+
+  /*
+   * Support Ctrl+S globally.
+   */
+  useEffect(() => {
+    const handleKeyboard =
+      (event: KeyboardEvent) => {
+        if (
+          (event.ctrlKey ||
+            event.metaKey) &&
+          event.key.toLowerCase() ===
+            "s"
+        ) {
+          event.preventDefault();
+          void saveActiveFile();
+        }
+      };
+
+    window.addEventListener(
+      "keydown",
+      handleKeyboard,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "keydown",
+        handleKeyboard,
+      );
+    };
+  }, [saveActiveFile]);
 
   /*
    * Monaco mount.

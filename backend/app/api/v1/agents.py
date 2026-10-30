@@ -72,10 +72,22 @@ async def execute_agent(
             request=request,
         )
 
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
             detail=str(exc),
+        ) from exc
+
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Permission denied while accessing repository context.",
         ) from exc
 
     except Exception as exc:

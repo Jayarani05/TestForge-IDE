@@ -38,5 +38,4 @@ __all__ = [
     "cosine_similarity",
     "VectorRetriever",
     "PersistentContextRetriever",
-	
 ]

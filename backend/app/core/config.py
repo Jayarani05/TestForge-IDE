@@ -24,6 +24,16 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    openai_api_key: str | None = None
+    google_api_key: str | None = None
+    groq_api_key: str | None = None
+    deepseek_api_key: str | None = None
+
+    openai_model: str | None = None
+    gemini_model: str | None = None
+    llama_model: str | None = None
+    deepseek_model: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

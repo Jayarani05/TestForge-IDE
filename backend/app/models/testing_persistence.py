@@ -1,7 +1,15 @@
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, Boolean
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -14,6 +22,12 @@ class TestExecutionRecord(Base):
         Integer,
         primary_key=True,
         autoincrement=True,
+    )
+
+    execution_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
     )
 
     repository_path: Mapped[str] = mapped_column(
@@ -59,6 +73,36 @@ class TestExecutionRecord(Base):
         nullable=False,
     )
 
+    error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    coverage_percent: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    coverage_covered_statements: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    coverage_total_statements: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    coverage_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    source_digest: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
@@ -73,6 +117,13 @@ class FailureAnalysisRecord(Base):
         Integer,
         primary_key=True,
         autoincrement=True,
+    )
+
+    execution_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("test_executions.execution_id"),
+        nullable=True,
+        unique=True,
     )
 
     repository_path: Mapped[str] = mapped_column(
@@ -90,8 +141,31 @@ class FailureAnalysisRecord(Base):
         nullable=False,
     )
 
-    root_cause: Mapped[str] = mapped_column(
+    root_cause: Mapped[str | None] = mapped_column(
         Text,
+        nullable=True,
+    )
+
+    observed_details: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        nullable=False,
+    )
+
+    evidence: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
+        nullable=False,
+    )
+
+    inferred_explanation: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    recommendations: Mapped[str] = mapped_column(
+        Text,
+        default="[]",
         nullable=False,
     )
 
@@ -127,6 +201,24 @@ class SelfHealingRecord(Base):
         autoincrement=True,
     )
 
+    repair_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        unique=True,
+    )
+
+    execution_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("test_executions.execution_id"),
+        nullable=True,
+    )
+
+    failure_analysis_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("failure_analyses.id"),
+        nullable=True,
+    )
+
     repository_path: Mapped[str] = mapped_column(
         String(1000),
         nullable=False,
@@ -159,6 +251,46 @@ class SelfHealingRecord(Base):
         nullable=False,
     )
 
+    original_code: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    proposed_code: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    review_status: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+    )
+
+    apply_approved: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True,
+    )
+
+    apply_outcome: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    restore_outcome: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
+    restored_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
@@ -186,10 +318,19 @@ class AnalyticsRecordDB(Base):
         nullable=False,
     )
 
-    coverage_improvement: Mapped[float] = mapped_column(
+    coverage_before: Mapped[float | None] = mapped_column(
         Float,
-        default=0.0,
-        nullable=False,
+        nullable=True,
+    )
+
+    coverage_after: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+    )
+
+    coverage_improvement: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
     )
 
     defect_detection_rate: Mapped[float] = mapped_column(

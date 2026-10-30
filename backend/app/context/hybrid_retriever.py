@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,9 +48,18 @@ class HybridContextRetriever:
         and vector-based retrieval.
         """
 
+        repository_path = str(
+            Path(query.repository_path)
+            .expanduser()
+            .resolve()
+        )
+        query = query.model_copy(
+            update={"repository_path": repository_path}
+        )
+
         chunks = await self._load_chunks(
             session=session,
-            repository_path=query.repository_path,
+            repository_path=repository_path,
         )
 
         lexical_response = (

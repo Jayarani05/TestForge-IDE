@@ -1,4 +1,7 @@
-from app.agents.code_validator import GeneratedCodeValidator
+from app.agents.code_validator import (
+    GeneratedCodeValidationError,
+    GeneratedCodeValidator,
+)
 from app.agents.providers import LLMRequest
 from app.agents.test_code_generation import (
     GeneratedTestCode,
@@ -29,6 +32,9 @@ Rules:
 8. Include setup only when required.
 9. Return ONLY the requested code.
 10. Do not wrap the response in Markdown code fences.
+11. Use recognizable test structure for the requested framework.
+12. If repository context is absent, do not invent repository APIs,
+    fixtures, selectors, or expected behavior.
 """.strip()
 
     def __init__(
@@ -74,6 +80,10 @@ Test cases:
 Repository context:
 {context}
 
+When repository context is empty, write only framework-valid tests that
+derive directly from the supplied scenario steps and expected results.
+Do not fabricate application-specific setup or assertions.
+
 Return only the executable source code.
 """.strip()
 
@@ -108,6 +118,7 @@ Return only the executable source code.
         validation = self.validator.validate(
             code=code,
             language=request.language.value,
+            framework=request.framework.value,
         )
 
         if not validation.valid:
@@ -123,8 +134,8 @@ Return only the executable source code.
                         f", column {validation.column}"
                     )
 
-            raise ValueError(
-                "Generated code failed syntax validation"
+            raise GeneratedCodeValidationError(
+                "Generated code validation failed"
                 f"{location}: {validation.error}"
             )
 
@@ -148,4 +159,14 @@ Return only the executable source code.
             repository_path=request.repository_path,
             generated_files=[generated_file],
             total_files=1,
+            context_available=bool(context.strip()),
+            context_warning=(
+                None
+                if context.strip()
+                else (
+                    "No repository context was retrieved. Generated code "
+                    "was limited to the supplied scenarios and may need "
+                    "repository-specific adaptation."
+                )
+            ),
         )

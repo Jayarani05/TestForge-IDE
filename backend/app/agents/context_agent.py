@@ -53,7 +53,7 @@ class ContextAwareTestForgeAgent:
 
         assembly = self.assembler.assemble(
             query=request.prompt,
-            repository_path=request.repository_path,
+            repository_path=retrieval_response.repository_path,
             results=retrieval_response.results,
         )
 
@@ -64,6 +64,9 @@ class ContextAwareTestForgeAgent:
         enriched_request = request.model_copy(
             update={
                 "context": context_text,
+                "repository_path": (
+                    retrieval_response.repository_path
+                ),
             }
         )
 

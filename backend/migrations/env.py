@@ -1,4 +1,4 @@
-﻿from logging.config import fileConfig
+from logging.config import fileConfig
 import asyncio
 
 from alembic import context

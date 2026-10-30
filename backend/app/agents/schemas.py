@@ -3,6 +3,44 @@ from pydantic import BaseModel, Field
 from app.agents.tasks import AgentTask
 
 
+class RepositoryAnalysis(BaseModel):
+    """Structured repository analysis returned by TestForge."""
+
+    architecture: str = ""
+
+    technologies: list[str] = Field(
+        default_factory=list
+    )
+
+    dependencies: list[str] = Field(
+        default_factory=list
+    )
+
+    important_modules: list[str] = Field(
+        default_factory=list
+    )
+
+    apis: list[str] = Field(
+        default_factory=list
+    )
+
+    configurations: list[str] = Field(
+        default_factory=list
+    )
+
+    existing_tests: list[str] = Field(
+        default_factory=list
+    )
+
+    automation_assets: list[str] = Field(
+        default_factory=list
+    )
+
+    testing_areas: list[str] = Field(
+        default_factory=list
+    )
+
+
 class AgentRequest(BaseModel):
     """Request sent to a TestForge AI agent."""
 
@@ -42,3 +80,5 @@ class AgentResponse(BaseModel):
     input_tokens: int | None = None
 
     output_tokens: int | None = None
+
+    analysis: RepositoryAnalysis | None = None

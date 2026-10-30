@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +34,9 @@ async def index_repository_context(
     """Chunk a repository, generate embeddings, and persist them."""
 
     try:
+        repository_path = str(
+            Path(request.path).expanduser().resolve()
+        )
         chunks = chunking_service.chunk_repository(
             request.path
         )
@@ -39,11 +44,12 @@ async def index_repository_context(
         indexed_count = await embedding_service.index_chunks(
             session=session,
             chunks=chunks,
+            repository_path=repository_path,
         )
 
         return {
             "status": "ok",
-            "repository_path": request.path,
+            "repository_path": repository_path,
             "chunks_created": len(chunks),
             "chunks_indexed": indexed_count,
             "embedding_dimension": (

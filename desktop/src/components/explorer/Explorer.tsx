@@ -77,13 +77,6 @@ export default function Explorer({
           return;
         }
 
-        /*
-         * Read repository root.
-         */
-        await window.electronAPI.ensureOutputs(
-          selectedPath,
-        );
-
         const rootEntries =
           await readDirectory(selectedPath);
 
@@ -139,7 +132,9 @@ export default function Explorer({
         );
 
         setError(
-          "Unable to open repository.",
+          err instanceof Error
+            ? err.message
+            : "Unable to open repository.",
         );
       } finally {
         setLoading(false);
@@ -193,10 +188,6 @@ export default function Explorer({
         setError(null);
 
         try {
-          await window.electronAPI.ensureOutputs(
-            path,
-          );
-
           const rootEntries =
             await readDirectory(path);
 
@@ -351,6 +342,63 @@ export default function Explorer({
       window.removeEventListener(
         "testforge:workspace-refresh",
         refreshWorkspace,
+      );
+    };
+  }, [repositoryPath]);
+
+  useEffect(() => {
+    const handleGeneratedFileSaved = (
+      event: Event,
+    ) => {
+      const path = (
+        event as CustomEvent<{ path?: string }>
+      ).detail?.path;
+      if (!path || !repositoryPath) {
+        return;
+      }
+
+      setActiveFile(path);
+      const normalizedRepository = repositoryPath.replace(/[\\/]+$/, "");
+      const normalizedPath = path.replace(/[\\/]+$/, "");
+      const relativePath = normalizedPath.slice(
+        normalizedRepository.length,
+      );
+      const directories = relativePath
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .slice(0, -1);
+      const separator = repositoryPath.includes("\\") ? "\\" : "/";
+      let currentPath = normalizedRepository;
+      const parentPaths: string[] = [];
+
+      for (const directory of directories) {
+        currentPath += `${separator}${directory}`;
+        parentPaths.push(currentPath);
+      }
+
+      if (
+        normalizedPath.toLowerCase().startsWith(
+          `${normalizedRepository.toLowerCase()}${separator.toLowerCase()}`,
+        )
+      ) {
+        setExpandedPaths((previous) => {
+          const next = new Set(previous);
+          parentPaths.forEach((parentPath) => next.add(parentPath));
+          return next;
+        });
+        void handleRefresh();
+      }
+    };
+
+    window.addEventListener(
+      "testforge:generated-file-saved",
+      handleGeneratedFileSaved,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "testforge:generated-file-saved",
+        handleGeneratedFileSaved,
       );
     };
   }, [repositoryPath]);

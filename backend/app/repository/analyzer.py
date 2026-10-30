@@ -1,4 +1,4 @@
-﻿from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field
 
 
 class DependencyInfo(BaseModel):
@@ -37,15 +37,12 @@ class ProjectInfo(BaseModel):
     name: str
     path: str
     project_type: str
-
     languages: list[str] = Field(
         default_factory=list
     )
-
     frameworks: list[str] = Field(
         default_factory=list
     )
-
     dependency_files: list[str] = Field(
         default_factory=list
     )
@@ -91,5 +88,23 @@ class RepositoryAnalysis(BaseModel):
     )
 
     automation_files: list[AutomationFileInfo] = Field(
+        default_factory=list
+    )
+
+    recommended_test_framework: str | None = None
+
+    framework_recommendation_evidence: list[str] = Field(
+        default_factory=list
+    )
+
+    supported_test_frameworks: list[str] = Field(
+        default_factory=list
+    )
+
+    framework_support_evidence: dict[str, list[str]] = Field(
+        default_factory=dict
+    )
+
+    supported_test_languages: list[str] = Field(
         default_factory=list
     )

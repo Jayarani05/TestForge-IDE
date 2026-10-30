@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from hashlib import blake2b
 
 from app.context.models import ContextChunk
 
@@ -52,7 +53,14 @@ class HashEmbeddingProvider(EmbeddingProvider):
         tokens = text.lower().split()
 
         for token in tokens:
-            index = hash(token) % self._dimension
+            digest = blake2b(
+                token.encode("utf-8"),
+                digest_size=8,
+            ).digest()
+            index = (
+                int.from_bytes(digest, byteorder="big")
+                % self._dimension
+            )
             vector[index] += 1.0
 
         magnitude = sum(

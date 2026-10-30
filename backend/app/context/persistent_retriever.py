@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,11 @@ class PersistentContextRetriever:
         session: AsyncSession,
         query: ContextQuery,
     ) -> ContextResponse:
+        repository_path = str(
+            Path(query.repository_path)
+            .expanduser()
+            .resolve()
+        )
         query_vector = (
             self.embedding_provider.embed_text(
                 query.query
@@ -37,7 +44,7 @@ class PersistentContextRetriever:
             select(ContextEmbedding)
             .where(
                 ContextEmbedding.repository_path
-                == query.repository_path
+                == repository_path
             )
         )
 
@@ -93,7 +100,7 @@ class PersistentContextRetriever:
 
         return ContextResponse(
             query=query.query,
-            repository_path=query.repository_path,
+            repository_path=repository_path,
             results=results,
             total_results=len(candidates),
         )

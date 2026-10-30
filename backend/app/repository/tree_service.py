@@ -1,4 +1,4 @@
-﻿import os
+import os
 from pathlib import Path
 
 from app.repository.file_tree import (
@@ -23,7 +23,12 @@ class RepositoryTreeService:
         ".tox",
         ".idea",
         ".vscode",
+        ".cache",
+        ".parcel-cache",
+        ".turbo",
+        ".vite",
         "dist",
+        "dist-electron",
         "build",
         "coverage",
         ".next",
@@ -101,14 +106,21 @@ class RepositoryTreeService:
         files: list[RepositoryFile] = []
         directories: list[RepositoryDirectory] = []
 
-        for current_path, dir_names, file_names in os.walk(root):
+        def raise_walk_error(error: OSError) -> None:
+            raise error
+
+        for current_path, dir_names, file_names in os.walk(
+            root,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            current = Path(current_path)
             dir_names[:] = [
                 directory
                 for directory in dir_names
                 if directory not in self.IGNORED_DIRECTORIES
+                and not (current / directory).is_symlink()
             ]
-
-            current = Path(current_path)
 
             if current != root:
                 relative_directory = current.relative_to(root)
@@ -123,6 +135,9 @@ class RepositoryTreeService:
 
             for file_name in file_names:
                 file_path = current / file_name
+
+                if file_path.is_symlink():
+                    continue
 
                 try:
                     size_bytes = file_path.stat().st_size

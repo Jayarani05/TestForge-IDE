@@ -58,7 +58,7 @@ async def assemble_context(
 
         assembly = assembler.assemble(
             query=query.query,
-            repository_path=query.repository_path,
+            repository_path=retrieval_response.repository_path,
             results=retrieval_response.results,
         )
 

@@ -1,194 +1,153 @@
+import re
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.execution.models import ExecutionResult, ExecutionStatus
+from app.execution.process_manager import ProcessManager
 
 
 class FailureType(str, Enum):
-    APPLICATION_DEFECT = "application_defect"
-    UI_CHANGE = "ui_change"
-    INVALID_LOCATOR = "invalid_locator"
-    API_CHANGE = "api_change"
+    ASSERTION_FAILURE = "assertion_failure"
+    SYNTAX_ERROR = "syntax_error"
+    IMPORT_ERROR = "import_error"
+    RUNNER_ERROR = "runner_error"
+    TIMEOUT = "timeout"
     CONFIGURATION_PROBLEM = "configuration_problem"
-    AUTOMATION_FAILURE = "automation_failure"
     UNKNOWN = "unknown"
 
 
 class FailureAnalysisRequest(BaseModel):
-    repository_path: str = Field(..., min_length=1)
-    file_path: str = Field(..., min_length=1)
-    framework: str = Field(..., min_length=1)
-    status: str = Field(..., min_length=1)
-    stdout: str = ""
-    stderr: str = ""
-    error: str | None = None
+    execution: ExecutionResult
+
+    @model_validator(mode="after")
+    def require_unsuccessful_execution(self):
+        if self.execution.status in {
+            ExecutionStatus.PASSED,
+            ExecutionStatus.SKIPPED,
+            ExecutionStatus.PENDING,
+            ExecutionStatus.RUNNING,
+        }:
+            raise ValueError("Failure analysis requires a completed unsuccessful execution.")
+        return self
 
 
 class FailureAnalysisResult(BaseModel):
+    execution_id: str
+    execution_file: str
+    execution_status: ExecutionStatus
     failure_type: FailureType
-    root_cause: str
-    evidence: list[str]
+    observed_details: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    root_cause: str | None = None
+    inferred_explanation: str | None = None
+    recommendations: list[str] = Field(default_factory=list)
     severity: str
-    suggested_fix: str
     repair_required: bool
 
 
 def analyze_failure(
     request: FailureAnalysisRequest,
 ) -> FailureAnalysisResult:
+    execution = request.execution
+    output = ProcessManager._redact_secrets(
+        "\n".join(
+            part for part in (execution.stdout, execution.stderr, execution.error or "")
+            if part
+        ),
+        None,
+    )
+    lines = [
+        line.strip()
+        for line in output.splitlines()
+        if line.strip()
+    ]
+    evidence = [line[:500] for line in lines[-12:]]
+    lowered = output.lower()
 
-    text = " ".join(
-        [
-            request.stdout,
-            request.stderr,
-            request.error or "",
-        ]
-    ).lower()
-
-    evidence: list[str] = []
-
-    # Python import/module/symbol failures
-    if (
-        "no module named" in text
-        or "modulenotfounderror" in text
-        or "cannot import name" in text
-        or "importerror" in text
-    ):
-        failure_type = FailureType.CONFIGURATION_PROBLEM
-        severity = "high"
-
-        root_cause = (
-            "A required Python module, package, or imported "
-            "symbol could not be resolved."
+    if execution.status == ExecutionStatus.TIMEOUT:
+        failure_type = FailureType.TIMEOUT
+        details = ["The execution result reports a timeout."]
+        if execution.duration_seconds:
+            details.append(
+                f"Recorded execution duration: {execution.duration_seconds:.2f} seconds."
+            )
+        recommendation = "Review the timeout and test synchronization; no code cause is established."
+    elif execution.status == ExecutionStatus.ERROR:
+        runner_markers = (
+            "runner executable is unavailable",
+            "runner could not be started",
+            "no module named pytest",
+            "no module named selenium",
+            "browserType.launch",
+            "webdriverexception",
+            "sessionnotcreatedexception",
         )
-
-        suggested_fix = (
-            "Verify the Python project root, PYTHONPATH, "
-            "installed dependencies, module name, and "
-            "imported symbol."
+        configuration_markers = (
+            "modulenotfounderror",
+            "no module named",
+            "cannot import name",
+            "importerror",
         )
-
-        evidence.append(
-            "Python import or symbol-resolution failure detected."
-        )
-
-    # Selenium / Playwright locator failures
-    elif (
-        "no such element" in text
-        or "unable to locate element" in text
-        or "locator" in text
-    ):
-        failure_type = FailureType.INVALID_LOCATOR
-        severity = "high"
-
-        root_cause = (
-            "The automation script could not locate "
-            "the expected UI element."
-        )
-
-        suggested_fix = (
-            "Inspect the current DOM and update the locator."
-        )
-
-        evidence.append(
-            "Locator-related failure detected."
-        )
-
-    # API failures
-    elif (
-        "404" in text
-        or "401" in text
-        or "403" in text
-        or "500" in text
-        or ("api" in text and "error" in text)
-    ):
-        failure_type = FailureType.API_CHANGE
-        severity = "high"
-
-        root_cause = (
-            "The test encountered an API response "
-            "or API contract problem."
-        )
-
-        suggested_fix = (
-            "Verify the endpoint, HTTP method, authentication, "
-            "request payload, and expected response."
-        )
-
-        evidence.append(
-            "API error indicators detected."
-        )
-
-    # Assertion failures
-    elif (
-        "assertionerror" in text
-        or "assert " in text
-        or "failed" in text
-    ):
-        failure_type = FailureType.APPLICATION_DEFECT
-        severity = "medium"
-
-        root_cause = (
-            "The test assertion did not match "
-            "the observed application behavior."
-        )
-
-        suggested_fix = (
-            "Compare the expected behavior with the actual "
-            "application behavior and inspect the related "
-            "implementation."
-        )
-
-        evidence.append(
-            "Test assertion or failure output detected."
-        )
-
-    # Timeout failures
-    elif (
-        "timeout" in text
-        or "timed out" in text
-    ):
-        failure_type = FailureType.AUTOMATION_FAILURE
-        severity = "medium"
-
-        root_cause = (
-            "The test operation exceeded "
-            "its allowed execution time."
-        )
-
-        suggested_fix = (
-            "Inspect synchronization, network delays, "
-            "browser state, and timeout configuration."
-        )
-
-        evidence.append(
-            "Timeout condition detected."
-        )
-
-    # Unknown failure
+        if any(marker in lowered for marker in configuration_markers):
+            failure_type = FailureType.CONFIGURATION_PROBLEM
+            details = ["Execution output contains a Python import/configuration error."]
+            recommendation = "Verify project configuration and dependencies before changing source."
+        else:
+            failure_type = FailureType.RUNNER_ERROR
+            details = ["The execution result reports a runner error."]
+            if any(marker in lowered for marker in runner_markers):
+                details.append("Output contains a runner or browser initialization indicator.")
+            recommendation = "Check runner availability and framework configuration."
     else:
-        failure_type = FailureType.UNKNOWN
-        severity = "medium"
+        if re.search(r"\b(?:AssertionError|assertion failed|expect\(.*\)\.to)\b", output, re.I):
+            failure_type = FailureType.ASSERTION_FAILURE
+            details = ["Execution output contains an assertion-failure indicator."]
+            recommendation = "Compare the recorded expected and actual values; available output does not identify a source-code cause."
+        elif re.search(r"\b(?:SyntaxError|SyntaxError:|Syntax error)\b", output, re.I):
+            failure_type = FailureType.SYNTAX_ERROR
+            details = ["Execution output contains a syntax-error indicator."]
+            recommendation = "Inspect the cited file and line before proposing a source change."
+        elif re.search(
+            r"\b(?:ModuleNotFoundError|ImportError|No module named|Cannot find module)\b",
+            output,
+            re.I,
+        ):
+            failure_type = FailureType.IMPORT_ERROR
+            details = ["Execution output contains an import-resolution error."]
+            recommendation = "Verify the selected project root and declared dependencies."
+        elif execution.exit_code is not None and execution.exit_code != 0:
+            failure_type = FailureType.UNKNOWN
+            details = [f"The process exited with code {execution.exit_code}."]
+            recommendation = "Inspect the captured output and test source; no specific cause is established."
+        else:
+            failure_type = FailureType.UNKNOWN
+            details = ["The execution result contains insufficient diagnostic output."]
+            recommendation = "Review the test and rerun it with appropriate diagnostic output."
 
-        root_cause = (
-            "The available execution information was "
-            "insufficient to determine a specific "
-            "failure category."
-        )
-
-        suggested_fix = (
-            "Inspect the complete execution log, stack trace, "
-            "and affected source files."
-        )
-
-        evidence.append(
-            "No known failure pattern was detected."
-        )
+    root_cause = None
+    if failure_type in {FailureType.TIMEOUT, FailureType.RUNNER_ERROR}:
+        root_cause = None
+    elif failure_type == FailureType.UNKNOWN:
+        root_cause = None
 
     return FailureAnalysisResult(
+        execution_id=execution.execution_id,
+        execution_file=execution.file_path,
+        execution_status=execution.status,
         failure_type=failure_type,
-        root_cause=root_cause,
+        observed_details=details,
         evidence=evidence,
-        severity=severity,
-        suggested_fix=suggested_fix,
-        repair_required=True,
+        root_cause=root_cause,
+        inferred_explanation=None,
+        recommendations=[recommendation],
+        severity="high" if failure_type in {
+            FailureType.CONFIGURATION_PROBLEM,
+            FailureType.RUNNER_ERROR,
+            FailureType.SYNTAX_ERROR,
+        } else "medium",
+        repair_required=failure_type in {
+            FailureType.ASSERTION_FAILURE,
+            FailureType.SYNTAX_ERROR,
+        },
     )

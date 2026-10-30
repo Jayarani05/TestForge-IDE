@@ -19,16 +19,20 @@ class ContextEmbeddingService:
         self,
         session: AsyncSession,
         chunks: list[ContextChunk],
+        repository_path: str | None = None,
     ) -> int:
         """Create embeddings and persist context chunks."""
-
-        if not chunks:
-            return 0
 
         repository_paths = {
             chunk.repository_path
             for chunk in chunks
         }
+
+        if repository_path is not None:
+            repository_paths.add(repository_path)
+
+        if not repository_paths:
+            return 0
 
         for repository_path in repository_paths:
             await session.execute(

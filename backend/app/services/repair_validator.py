@@ -16,16 +16,23 @@ class RepairValidator:
 
         path = Path(file_path)
 
-        if path.suffix.lower() == ".py":
-            result = self.code_validator.validate(
-                code=repaired_code,
-                language="python",
-            )
+        languages = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+        }
+        language = languages.get(path.suffix.lower())
+        if language is None:
+            return False, "Unsupported repair file type."
+        result = self.code_validator.validate(
+            code=repaired_code,
+            language=language,
+        )
 
-            if not result.valid:
-                return False, (
-                    f"Invalid Python repair: {result.error} "
-                    f"(line {result.line}, column {result.column})"
-                )
+        if not result.valid:
+            return False, (
+                f"Invalid {language} repair: {result.error} "
+                f"(line {result.line}, column {result.column})"
+            )
 
         return True, None

@@ -1,3 +1,6 @@
+import logging
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,17 +19,25 @@ from app.context import (
 from app.context.hybrid_retriever import HybridContextRetriever
 from app.core.database import get_db
 from app.agents.test_code_generation import (
+    SaveGeneratedTestCodeRequest,
+    SaveGeneratedTestCodeResponse,
     TestCodeGenerationRequest,
     TestCodeGenerationResponse,
 )
 from app.agents.test_code_generator import TestCodeGenerator
 from app.agents.generated_file_service import GeneratedFileService
+from app.agents.code_validator import (
+    GeneratedCodeValidationError,
+    GeneratedCodeValidator,
+)
+from app.repository.analyzer_service import RepositoryAnalyzerService
 
 router = APIRouter(
     prefix="/tests",
     tags=["Test Generation"],
 )
 
+logger = logging.getLogger(__name__)
 
 embedding_provider = HashEmbeddingProvider(
     dimension=128
@@ -49,6 +60,10 @@ test_generator = TestGenerationAgent()
 test_code_generator = TestCodeGenerator()
 
 generated_file_service = GeneratedFileService()
+
+generated_code_validator = GeneratedCodeValidator()
+
+repository_analyzer = RepositoryAnalyzerService()
 
 @router.post(
     "/generate",
@@ -124,6 +139,58 @@ async def generate_test_code(
     request: TestCodeGenerationRequest,
     session: AsyncSession = Depends(get_db),
 ) -> TestCodeGenerationResponse:
+    try:
+        analysis = repository_analyzer.analyze_repository(
+            request.repository_path
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="The selected repository could not be found.",
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Permission denied while analyzing the selected repository.",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    if not analysis.supported_test_languages:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No supported Python, JavaScript, or TypeScript project "
+                "language was detected."
+            ),
+        )
+
+    language_names = {
+        "python": "Python",
+        "javascript": "JavaScript",
+        "typescript": "TypeScript",
+    }
+    if language_names[request.language.value] not in analysis.supported_test_languages:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The selected repository does not provide evidence for "
+                f"{request.language.value}."
+            ),
+        )
+
+    if request.framework.value not in analysis.supported_test_frameworks:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No repository evidence supports {request.framework.value}. "
+                "Choose a detected framework or add its dependency/configuration "
+                "and analyze the repository again."
+            ),
+        )
 
     try:
         context_query = ContextQuery(
@@ -172,27 +239,69 @@ async def generate_test_code(
                 orchestrator=orchestrator,
             )
         )
-
-        for generated_file in generated_response.generated_files:
-            generated_file_service.save(
-                repository_path=request.repository_path,
-                generated_file=generated_file,
-            )
-
         return generated_response
 
-    except ValueError as exc:
+    except GeneratedCodeValidationError as exc:
         raise HTTPException(
-            status_code=400,
+            status_code=422,
             detail=str(exc),
         ) from exc
 
     except Exception as exc:
-        import traceback
+        logger.exception("Test-code generation failed.")
+        raise HTTPException(
+            status_code=502,
+            detail="Test-code generation failed. Review the request and retry.",
+        ) from exc
 
-        traceback.print_exc()
 
+@router.post(
+    "/save-code",
+    response_model=SaveGeneratedTestCodeResponse,
+)
+async def save_generated_test_code(
+    request: SaveGeneratedTestCodeRequest,
+) -> SaveGeneratedTestCodeResponse:
+    validation = generated_code_validator.validate(
+        code=request.generated_file.code,
+        language=request.generated_file.language.value,
+        framework=request.generated_file.framework.value,
+    )
+    if not validation.valid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Generated code validation failed: {validation.error}",
+        )
+
+    try:
+        saved_path = generated_file_service.save(
+            repository_path=request.repository_path,
+            generated_file=request.generated_file,
+            overwrite=request.overwrite,
+        )
+    except FileExistsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A file already exists at the generated destination. "
+                "Confirm replacement before retrying."
+            ),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+    except OSError as exc:
+        logger.exception("Generated test file could not be saved.")
         raise HTTPException(
             status_code=500,
-            detail=f"{type(exc).__name__}: {exc}",
+            detail="Generated test file could not be saved.",
         ) from exc
+
+    return SaveGeneratedTestCodeResponse(
+        repository_path=str(Path(request.repository_path).resolve()),
+        file_path=saved_path,
+        relative_path=request.generated_file.file_path,
+        code=request.generated_file.code,
+    )

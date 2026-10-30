@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import TopBar from "../components/top-bar/TopBar";
 
@@ -35,6 +35,31 @@ import {
 export default function MainLayout() {
   const [activeFile, setActiveFile] =
     useState<string | null>(null);
+
+  useEffect(() => {
+    const handleGeneratedFileSaved = (
+      event: Event,
+    ) => {
+      const path = (
+        event as CustomEvent<{ path?: string }>
+      ).detail?.path;
+      if (path) {
+        setActiveFile(path);
+      }
+    };
+
+    window.addEventListener(
+      "testforge:generated-file-saved",
+      handleGeneratedFileSaved,
+    );
+
+    return () => {
+      window.removeEventListener(
+        "testforge:generated-file-saved",
+        handleGeneratedFileSaved,
+      );
+    };
+  }, []);
 
   /*
    * LEFT SIDEBAR
@@ -99,9 +124,9 @@ export default function MainLayout() {
         repositoryPath,
       );
 
-      repositoryStore.setAnalysis(analysis);
-
       await indexRepositoryContext(repositoryPath);
+
+      repositoryStore.setAnalysis(analysis);
 
       window.dispatchEvent(
         new CustomEvent("testforge:repository-analyzed", {
@@ -167,22 +192,22 @@ export default function MainLayout() {
     setActiveView("run");
     setShowBottomPanel(true);
 
-    window.dispatchEvent(
-      new CustomEvent(
-        "testforge:run-tests",
-      ),
-    );
+    window.requestAnimationFrame(() => {
+      window.dispatchEvent(
+        new CustomEvent("testforge:run-tests"),
+      );
+    });
   };
 
   const handleRunCurrentTest = () => {
     setActiveView("run");
     setShowBottomPanel(true);
 
-    window.dispatchEvent(
-      new CustomEvent(
-        "testforge:run-current-test",
-      ),
-    );
+    window.requestAnimationFrame(() => {
+      window.dispatchEvent(
+        new CustomEvent("testforge:run-current-test"),
+      );
+    });
   };
 
   const handleDebugTests = () => {
@@ -388,10 +413,7 @@ export default function MainLayout() {
               : "grid-rows-[minmax(0,1fr)]"
           }`}
         >
-          <Editor
-            filePath={activeFile}
-            onActivePathChange={setActiveFile}
-          />
+          <Editor />
 
           {showBottomPanel && (
             <BottomPanel />

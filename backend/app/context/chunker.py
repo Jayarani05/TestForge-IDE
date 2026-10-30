@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.context.models import ContextChunk, ContextSourceType
+from app.repository.tree_service import RepositoryTreeService
 
 
 class ContextChunker:
@@ -259,32 +260,19 @@ class ContextChunker:
         if cls._looks_binary(raw):
             return None
 
-        encodings = (
-            "utf-8",
-            "utf-8-sig",
-            "utf-16",
-            "utf-16-le",
-            "utf-16-be",
-            "latin-1",
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return None
+
+        if "\x00" in text:
+            return None
+
+        return (
+            text
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
         )
-
-        for encoding in encodings:
-            try:
-                text = raw.decode(encoding)
-
-                if "\x00" in text:
-                    return None
-
-                return (
-                    text
-                    .replace("\r\n", "\n")
-                    .replace("\r", "\n")
-                )
-
-            except UnicodeDecodeError:
-                continue
-
-        return None
 
     @staticmethod
     def _source_type(
@@ -626,7 +614,7 @@ class ContextChunker:
         Scan the repository and produce text-only context chunks.
         """
 
-        root = Path(repository_path)
+        root = Path(repository_path).expanduser().resolve()
 
         if not root.exists():
             raise FileNotFoundError(
@@ -651,25 +639,30 @@ class ContextChunker:
             ".mypy_cache",
             ".ruff_cache",
             "dist",
+            "dist-electron",
             "build",
             "coverage",
+            ".nyc_output",
             ".next",
             ".nuxt",
             ".cache",
             "target",
+            "out",
+            "release",
+            "electron-user-data",
             "bin",
             "obj",
         }
 
         chunks: list[ContextChunk] = []
+        tree = RepositoryTreeService().scan_repository(
+            str(root)
+        )
 
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-
+        for file in tree.files:
             relative_parts = {
                 part.lower()
-                for part in path.relative_to(root).parts
+                for part in Path(file.relative_path).parts
             }
 
             if relative_parts.intersection(
@@ -677,23 +670,19 @@ class ContextChunker:
             ):
                 continue
 
-            if self.should_skip_file(path):
+            if self.should_skip_file(file.path):
                 continue
-
-            relative_path = str(
-                path.relative_to(root)
-            ).replace(
-                "\\",
-                "/",
-            )
 
             file_chunks = self.chunk_file(
                 repository_path=str(root),
-                file_path=str(path),
-                relative_path=relative_path,
-                language=self._language(str(path)),
-                source_type=self._source_type(str(path)),
-                chunk_type=self._chunk_type(str(path)),
+                file_path=file.path,
+                relative_path=file.relative_path.replace(
+                    "\\",
+                    "/",
+                ),
+                language=file.language,
+                source_type=self._source_type(file.path),
+                chunk_type=self._chunk_type(file.path),
             )
 
             chunks.extend(file_chunks)

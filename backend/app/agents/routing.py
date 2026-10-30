@@ -51,6 +51,13 @@ class LLMRoutingStrategy:
             "llama",
             "mock",
         ],
+        AgentTask.EXPLAIN_CODE: [
+            "gpt",
+            "gemini",
+            "llama",
+            "deepseek",
+            "mock",
+        ],
     }
 
     @classmethod

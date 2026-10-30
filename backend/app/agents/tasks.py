@@ -13,3 +13,5 @@ class AgentTask(str, Enum):
     ANALYZE_FAILURE = "analyze_failure"
 
     SELF_HEAL = "self_heal"
+
+    EXPLAIN_CODE = "explain_code"

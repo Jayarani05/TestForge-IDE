@@ -32,6 +32,7 @@ import {
   type RepositoryAnalyzeResponse,
 } from "../../services/repositoryApi";
 import { repositoryStore } from "../stores/repositoryStore";
+import { editorStore } from "../stores/editorStore";
 import {
   saveGeneratedTestCode,
   generateTestCode,
@@ -54,7 +55,8 @@ type AIAction =
   | "generate-tests"
   | "generate-automation"
   | "analyze-failure"
-  | "self-heal";
+  | "self-heal"
+  | "explain-code";
 
 type ScenarioTypeSelection =
   | "all"
@@ -139,6 +141,13 @@ const actions: AIActionItem[] = [
       "Repair and re-run failed automation",
     icon: Sparkles,
   },
+  {
+    id: "explain-code",
+    title: "Explain Code",
+    description:
+      "Explain selected code or the current file",
+    icon: Lightbulb,
+  },
 ];
 
 const initialMessages: ChatMessage[] = [
@@ -157,6 +166,7 @@ const taskMap: Record<
   | "generate_automation"
   | "analyze_failure"
   | "self_heal"
+  | "explain_code"
 > = {
   "analyze-repository":
     "analyze_repository",
@@ -172,6 +182,9 @@ const taskMap: Record<
 
   "self-heal":
     "self_heal",
+
+  "explain-code":
+    "explain_code",
 };
 
 const promptMap: Record<
@@ -192,6 +205,9 @@ const promptMap: Record<
 
   "self-heal":
     "Identify automation artifacts that may require self-healing. Explain likely repair strategies for locator changes, UI changes, API changes, configuration problems, and automation failures.",
+
+  "explain-code":
+    "Explain the selected or current file code. Describe its purpose, main logic, functions or classes, dependencies, and execution flow based only on the actual source. Do not modify or execute the code, and do not expose secrets.",
 };
 
 const allTestTypes: TestType[] = [
@@ -366,6 +382,10 @@ export default function AIPanel() {
       void executeActionRef.current("self-heal");
     };
 
+    const handleExplainCode = () => {
+      void executeActionRef.current("explain-code");
+    };
+
     const handleAnalytics = () => {
       setActiveTab("insights");
     };
@@ -387,6 +407,11 @@ export default function AIPanel() {
     window.addEventListener(
       "testforge:self-heal",
       handleSelfHeal,
+    );
+
+    window.addEventListener(
+      "testforge:explain-code",
+      handleExplainCode,
     );
 
     window.addEventListener(
@@ -413,6 +438,11 @@ export default function AIPanel() {
       window.removeEventListener(
         "testforge:self-heal",
         handleSelfHeal,
+      );
+
+      window.removeEventListener(
+        "testforge:explain-code",
+        handleExplainCode,
       );
 
       window.removeEventListener(
@@ -450,10 +480,41 @@ export default function AIPanel() {
     const repositoryPath =
       repositoryStore.getState().rootPath;
 
+    const activeEditorTab =
+      editorStore.getState().tabs.find(
+        (tab) =>
+          tab.id ===
+          editorStore.getState().activeTabId,
+      ) ?? null;
+    const selectedCode =
+      editorStore.getSelectedCode();
+    const codeToExplain =
+      selectedCode.trim()
+        ? selectedCode
+        : activeEditorTab?.content ?? "";
+
     setActiveTab("chat");
     setLastAction(action);
 
-    if (!repositoryPath) {
+    if (action === "explain-code") {
+      if (!codeToExplain.trim()) {
+        const assistantMessage: ChatMessage =
+          {
+            id: messageIdRef.current++,
+            role: "assistant",
+            content:
+              "No code is available to explain. Open a file or select code in the editor.",
+            action,
+          };
+
+        setMessages((current) => [
+          ...current,
+          assistantMessage,
+        ]);
+
+        return;
+      }
+    } else if (!repositoryPath) {
       const assistantMessage: ChatMessage =
         {
           id: messageIdRef.current++,
@@ -530,7 +591,7 @@ export default function AIPanel() {
             : promptMap[action];
 
         const response = await generateTests(
-          repositoryPath,
+          repositoryPath!,
           requestPrompt,
           testTypes,
           testGenerationCount,
@@ -567,6 +628,10 @@ export default function AIPanel() {
             "mock",
           ],
           repository_path: repositoryPath,
+          context:
+            action === "explain-code"
+              ? codeToExplain
+              : null,
           temperature: 0.2,
           max_tokens: 4096,
         })) as AIAnalysisResponse;
@@ -1135,7 +1200,11 @@ export default function AIPanel() {
 
         {activeTab ===
           "code" && (
-          <CodeView />
+          <CodeView
+            onExplainCode={() =>
+              void executeAction("explain-code")
+            }
+          />
         )}
 
         {activeTab ===
@@ -1520,7 +1589,11 @@ function ChatView({
    CODE VIEW
    ========================================================================== */
 
-function CodeView() {
+function CodeView({
+  onExplainCode,
+}: {
+  onExplainCode?: () => void;
+}) {
   return (
     <div className="h-full overflow-y-auto p-3">
 
@@ -1544,6 +1617,7 @@ function CodeView() {
         }
         title="Explain Code"
         description="Understand the selected code."
+        onClick={onExplainCode}
       />
 
       <ActionCard

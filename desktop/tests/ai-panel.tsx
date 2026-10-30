@@ -11,6 +11,7 @@ const trackedEvents = [
   "testforge:generate-tests",
   "testforge:analyze-failure",
   "testforge:self-heal",
+  "testforge:explain-code",
   "testforge:analytics",
   "testforge:open-ai",
 ];
@@ -64,7 +65,7 @@ repositoryStore.setRepository("/test/repository");
 
 export function Harness() {
   const [visible, setVisible] = useState(true);
-  const [activityView, setActivityView] = useState<"run" | "analytics">("run");
+  const [activityView, setActivityView] = useState<"run" | "analytics" | "history">("run");
   const [, setRevision] = useState(0);
 
   return (
@@ -131,6 +132,9 @@ export function Harness() {
       </button>
       <button type="button" onClick={() => setActivityView("analytics")}>
         Open analytics
+      </button>
+      <button type="button" onClick={() => setActivityView("history")}>
+        Open history
       </button>
       <button type="button" onClick={() => setActivityView("run")}>
         Open run panel

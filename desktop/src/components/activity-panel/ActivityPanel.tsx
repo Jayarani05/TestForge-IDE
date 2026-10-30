@@ -38,13 +38,14 @@ import {
   type TestingFramework,
 } from "../../services/testingApi";
 import { ApiRequestError } from "../../services/api";
+import { FailureHealingHistoryPanel } from "./FailureHealingHistoryPanel";
 import { editorStore, useEditorStore } from "../stores/editorStore";
 import {
   useRepositoryStore,
 } from "../stores/repositoryStore";
 
 interface ActivityPanelProps {
-  view: ActivityView;
+  view: ActivityView | string;
   onClose?: () => void;
 }
 
@@ -65,6 +66,16 @@ export default function ActivityPanel({
 
   if (view === "analytics") {
     return <AnalyticsPanel />;
+  }
+
+  if (
+    view === "history" ||
+    view === "failure-history" ||
+    view === "failure-healing" ||
+    view === "failures" ||
+    view === "healing"
+  ) {
+    return <FailureHealingHistoryPanel />;
   }
 
   if (view === "extensions") {
@@ -1307,6 +1318,8 @@ function AnalyticsPanel() {
     </aside>
   );
 }
+
+export { FailureHealingHistoryPanel } from "./FailureHealingHistoryPanel";
 
 function isExecutionHistory(value: unknown): value is ExecutionHistoryItem[] {
   return Array.isArray(value) && value.every((item: unknown) => {

@@ -375,6 +375,14 @@ class TestForgeAgent:
                 f"{request.context}"
             )
 
+        if request.task == AgentTask.EXPLAIN_CODE:
+            sections.append(
+                "Explain the supplied code based only on its actual source. "
+                "Cover its purpose, main logic, functions or classes, "
+                "dependencies, and execution flow. Do not modify the code, "
+                "do not execute it, and do not expose secrets or credentials."
+            )
+
         sections.append(
             "Provide a precise response suitable "
             "for the TestForge testing workflow."

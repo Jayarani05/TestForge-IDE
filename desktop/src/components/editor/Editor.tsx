@@ -239,6 +239,27 @@ export default function Editor() {
         },
       );
 
+      editor.onDidChangeCursorSelection(() => {
+        const editorState = editorStore.getState();
+        const activeTabId = editorState.activeTabId;
+
+        if (!activeTabId) {
+          return;
+        }
+
+        const selection = editor.getSelection();
+        const model = editor.getModel();
+        const selectedText =
+          selection && model
+            ? model.getValueInRange(selection)
+            : "";
+
+        editorStore.setSelection(
+          activeTabId,
+          selectedText,
+        );
+      });
+
       editor.addCommand(
         2048 | 49,
         () => {

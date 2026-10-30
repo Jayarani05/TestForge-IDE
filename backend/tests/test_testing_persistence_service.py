@@ -20,6 +20,7 @@ from app.execution.models import (
     ExecutionStatus,
 )
 from app.models.testing_persistence import (
+    AnalyticsRecordDB,
     FailureAnalysisRecord,
     SelfHealingRecord,
     TestExecutionRecord as _TestExecutionRecord,
@@ -30,6 +31,7 @@ from app.services.history_schemas import (
     FailureHistoryItem,
     SelfHealingHistoryItem,
 )
+from app.services.history_service import testing_history_service
 from app.services.testing_persistence_service import TestingPersistenceService
 
 
@@ -122,6 +124,7 @@ def sqlite_history_engine():
     _TestExecutionRecord.__table__.create(engine)
     FailureAnalysisRecord.__table__.create(engine)
     SelfHealingRecord.__table__.create(engine)
+    AnalyticsRecordDB.__table__.create(engine)
     yield engine
     engine.dispose()
 
@@ -492,5 +495,131 @@ def test_history_schemas_reject_impossible_coverage_and_malformed_evidence():
             development_time_reduction=0,
             maintenance_reduction=0,
             self_healing_success_rate=0,
-            created_at=datetime.utcnow(),
         )
+
+def test_analytics_history_persists_and_retrieves_actual_metric_values():
+    db = FakeAsyncSession()
+    service = TestingPersistenceService()
+    stored = run(service.save_analytics(
+        db,
+        repository_path="repo",
+        test_generation_validity=100,
+        coverage_before=40,
+        coverage_after=62.5,
+        coverage_improvement=22.5,
+        defect_detection_rate=75,
+        development_time_reduction=25,
+        maintenance_reduction=30,
+        self_healing_success_rate=60,
+    ))
+    duplicate = run(service.save_analytics(
+        db,
+        repository_path="repo",
+        test_generation_validity=100,
+        coverage_before=40,
+        coverage_after=62.5,
+        coverage_improvement=22.5,
+        defect_detection_rate=75,
+        development_time_reduction=25,
+        maintenance_reduction=30,
+        self_healing_success_rate=60,
+    ))
+    retrieved = run(service.get_analytics(db, stored.id))
+    history = AnalyticsHistoryItem.model_validate(stored, from_attributes=True)
+
+    assert duplicate is stored
+    assert retrieved is stored
+    assert history.test_generation_validity == 100
+    assert history.coverage_improvement == 22.5
+    assert history.coverage_before == 40
+    assert history.coverage_after == 62.5
+    assert history.created_at is not None
+
+
+def test_analytics_history_handles_missing_measurements():
+    db = FakeAsyncSession()
+    service = TestingPersistenceService()
+    stored = run(service.save_analytics(
+        db,
+        repository_path="repo",
+        test_generation_validity=0,
+        coverage_improvement=None,
+        defect_detection_rate=0,
+        development_time_reduction=0,
+        maintenance_reduction=0,
+        self_healing_success_rate=0,
+    ))
+    history = AnalyticsHistoryItem.model_validate(stored, from_attributes=True)
+
+    assert history.coverage_before is None
+    assert history.coverage_after is None
+    assert history.coverage_improvement is None
+
+
+def test_analytics_history_rejects_invalid_values_and_duplicates_distinctly():
+    db = FakeAsyncSession()
+    service = TestingPersistenceService()
+
+    with pytest.raises(ValueError, match="between 0 and 100"):
+        run(service.save_analytics(
+            db,
+            repository_path="repo",
+            test_generation_validity=101,
+            coverage_improvement=None,
+            defect_detection_rate=0,
+            development_time_reduction=0,
+            maintenance_reduction=0,
+            self_healing_success_rate=0,
+        ))
+
+    with pytest.raises(ValueError, match="does not match"):
+        run(service.save_analytics(
+            db,
+            repository_path="repo",
+            test_generation_validity=0,
+            coverage_before=40,
+            coverage_after=62.5,
+            coverage_improvement=10,
+            defect_detection_rate=0,
+            development_time_reduction=0,
+            maintenance_reduction=0,
+            self_healing_success_rate=0,
+        ))
+
+    with pytest.raises(ValueError, match="required"):
+        run(service.save_analytics(
+            db,
+            repository_path="",
+            test_generation_validity=0,
+            coverage_improvement=None,
+            defect_detection_rate=0,
+            development_time_reduction=0,
+            maintenance_reduction=0,
+            self_healing_success_rate=0,
+        ))
+
+
+def test_analytics_history_survives_database_sessions(sqlite_history_engine):
+    service = TestingPersistenceService()
+
+    with Session(sqlite_history_engine, expire_on_commit=False) as session:
+        db = SQLiteAsyncSessionAdapter(session)
+        stored = run(service.save_analytics(
+            db,
+            repository_path="repo",
+            test_generation_validity=50,
+            coverage_before=40,
+            coverage_after=40,
+            coverage_improvement=0,
+            defect_detection_rate=0,
+            development_time_reduction=0,
+            maintenance_reduction=0,
+            self_healing_success_rate=0,
+        ))
+        run(service.commit(db))
+
+    with Session(sqlite_history_engine, expire_on_commit=False) as session:
+        db = SQLiteAsyncSessionAdapter(session)
+        history_service_records = run(testing_history_service.analytics(db, "repo", 10))
+        assert len(history_service_records) == 1
+        assert history_service_records[0].coverage_improvement == 0

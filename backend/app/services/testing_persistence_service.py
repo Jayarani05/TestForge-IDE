@@ -1,4 +1,5 @@
 import json
+import math
 from datetime import datetime
 
 from sqlalchemy import select
@@ -259,7 +260,7 @@ class TestingPersistenceService:
         await db.flush()
         return record
 
-    async def save_analytics(
+    async def save_analytics_legacy(
         self,
         db: AsyncSession,
         *,
@@ -346,5 +347,165 @@ class TestingPersistenceService:
             for field, value in values.items()
         )
 
+
+    async def get_analytics(
+        self,
+        db: AsyncSession,
+        record_id: int,
+    ) -> AnalyticsRecordDB | None:
+        result = await db.execute(
+            select(AnalyticsRecordDB).where(
+                AnalyticsRecordDB.id == record_id
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def save_analytics(
+        self,
+        db: AsyncSession,
+        *,
+        repository_path: str,
+        test_generation_validity: float,
+        coverage_improvement: float | None,
+        defect_detection_rate: float,
+        development_time_reduction: float,
+        maintenance_reduction: float,
+        self_healing_success_rate: float,
+        coverage_before: float | None = None,
+        coverage_after: float | None = None,
+        execution_id: str | None = None,
+    ) -> AnalyticsRecordDB:
+        self._validate_analytics_values(
+            repository_path=repository_path,
+            test_generation_validity=test_generation_validity,
+            coverage_before=coverage_before,
+            coverage_after=coverage_after,
+            coverage_improvement=coverage_improvement,
+            defect_detection_rate=defect_detection_rate,
+            development_time_reduction=development_time_reduction,
+            maintenance_reduction=maintenance_reduction,
+            self_healing_success_rate=self_healing_success_rate,
+        )
+
+        result = await db.execute(
+            select(AnalyticsRecordDB).where(
+                AnalyticsRecordDB.repository_path == repository_path
+            )
+        )
+        for existing in result.scalars().all():
+            if self._analytics_matches(
+                existing,
+                repository_path=repository_path,
+                test_generation_validity=test_generation_validity,
+                coverage_before=coverage_before,
+                coverage_after=coverage_after,
+                coverage_improvement=coverage_improvement,
+                defect_detection_rate=defect_detection_rate,
+                development_time_reduction=development_time_reduction,
+                maintenance_reduction=maintenance_reduction,
+                self_healing_success_rate=self_healing_success_rate,
+                execution_id=execution_id,
+            ):
+                return existing
+
+        record = AnalyticsRecordDB(
+            repository_path=repository_path,
+            test_generation_validity=test_generation_validity,
+            coverage_before=coverage_before,
+            coverage_after=coverage_after,
+            coverage_improvement=coverage_improvement,
+            defect_detection_rate=defect_detection_rate,
+            development_time_reduction=development_time_reduction,
+            maintenance_reduction=maintenance_reduction,
+            self_healing_success_rate=self_healing_success_rate,
+        )
+        db.add(record)
+        await db.flush()
+        return record
+
+    @staticmethod
+    def _validate_analytics_values(
+        *,
+        repository_path: str,
+        test_generation_validity: float,
+        coverage_before: float | None,
+        coverage_after: float | None,
+        coverage_improvement: float | None,
+        defect_detection_rate: float,
+        development_time_reduction: float,
+        maintenance_reduction: float,
+        self_healing_success_rate: float,
+    ) -> None:
+        if not isinstance(repository_path, str) or not repository_path.strip():
+            raise ValueError("repository_path is required.")
+        for name, value in (
+            ("test_generation_validity", test_generation_validity),
+            ("defect_detection_rate", defect_detection_rate),
+            ("self_healing_success_rate", self_healing_success_rate),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number.")
+            if value < 0 or value > 100:
+                raise ValueError(f"{name} must be between 0 and 100.")
+        for name, value in (
+            ("development_time_reduction", development_time_reduction),
+            ("maintenance_reduction", maintenance_reduction),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"{name} must be a finite number.")
+            if value > 100:
+                raise ValueError(f"{name} cannot exceed 100.")
+        for name, value in (
+            ("coverage_before", coverage_before),
+            ("coverage_after", coverage_after),
+        ):
+            if value is not None:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise ValueError(f"{name} must be a finite number.")
+                if value < 0 or value > 100:
+                    raise ValueError(f"{name} must be between 0 and 100.")
+        if coverage_improvement is not None:
+            if isinstance(coverage_improvement, bool) or not isinstance(coverage_improvement, (int, float)) or not math.isfinite(coverage_improvement):
+                raise ValueError("coverage_improvement must be a finite number.")
+            if coverage_improvement < -100 or coverage_improvement > 100:
+                raise ValueError("coverage_improvement must be between -100 and 100.")
+        if coverage_before is None or coverage_after is None:
+            if coverage_improvement is not None:
+                raise ValueError("Coverage improvement requires both coverage measurements.")
+        else:
+            expected = coverage_after - coverage_before
+            if coverage_improvement is None:
+                raise ValueError("Coverage improvement is required for comparable measurements.")
+            if not math.isclose(coverage_improvement, expected, abs_tol=0.01):
+                raise ValueError("Coverage improvement does not match its measurements.")
+
+    @staticmethod
+    def _analytics_matches(
+        record: AnalyticsRecordDB,
+        *,
+        repository_path: str,
+        test_generation_validity: float,
+        coverage_before: float | None,
+        coverage_after: float | None,
+        coverage_improvement: float | None,
+        defect_detection_rate: float,
+        development_time_reduction: float,
+        maintenance_reduction: float,
+        self_healing_success_rate: float,
+        execution_id: str | None = None,
+    ) -> bool:
+        return all(
+            (
+                record.repository_path == repository_path,
+                record.test_generation_validity == test_generation_validity,
+                record.coverage_before == coverage_before,
+                record.coverage_after == coverage_after,
+                record.coverage_improvement == coverage_improvement,
+                record.defect_detection_rate == defect_detection_rate,
+                record.development_time_reduction == development_time_reduction,
+                record.maintenance_reduction == maintenance_reduction,
+                record.self_healing_success_rate == self_healing_success_rate,
+            )
+        )
 
 testing_persistence_service = TestingPersistenceService()

@@ -13,11 +13,13 @@ export interface EditorTab {
 interface EditorState {
   tabs: EditorTab[];
   activeTabId: string | null;
+  selections: Record<string, string>;
 }
 
 const initialState: EditorState = {
   tabs: [],
   activeTabId: null,
+  selections: {},
 };
 
 let state: EditorState = initialState;
@@ -140,7 +142,7 @@ export const editorStore = {
     emit();
   },
 
-  closeTab(tabId: string) {
+    closeTab(tabId: string) {
     const index =
       state.tabs.findIndex(
         (tab) => tab.id === tabId,
@@ -154,6 +156,11 @@ export const editorStore = {
       state.tabs.filter(
         (tab) => tab.id !== tabId,
       );
+
+    const remainingSelections = {
+      ...state.selections,
+    };
+    delete remainingSelections[tabId];
 
     let activeTabId =
       state.activeTabId;
@@ -174,6 +181,7 @@ export const editorStore = {
     state = {
       tabs: remaining,
       activeTabId,
+      selections: remainingSelections,
     };
 
     emit();
@@ -183,9 +191,30 @@ export const editorStore = {
     state = {
       tabs: [],
       activeTabId: null,
+      selections: {},
     };
 
     emit();
+  },
+
+  setSelection(tabId: string, text: string) {
+    state = {
+      ...state,
+      selections: {
+        ...state.selections,
+        [tabId]: text,
+      },
+    };
+
+    emit();
+  },
+
+  getSelectedCode() {
+    if (!state.activeTabId) {
+      return "";
+    }
+
+    return state.selections[state.activeTabId] ?? "";
   },
 };
 

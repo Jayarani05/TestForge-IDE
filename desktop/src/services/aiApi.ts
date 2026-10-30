@@ -14,7 +14,8 @@ export type AITask =
   | "generate_tests"
   | "generate_automation"
   | "analyze_failure"
-  | "self_heal";
+  | "self_heal"
+  | "explain_code";
 
 export interface AIChatRequest {
   task: AITask;

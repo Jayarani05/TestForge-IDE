@@ -133,6 +133,29 @@ class AnalyticsHistoryItem(BaseModel):
     self_healing_success_rate: float = Field(ge=0, le=100)
     created_at: datetime
 
+    @model_validator(mode="after")
+    def validate_coverage_relationship(self):
+        if self.coverage_before is None or self.coverage_after is None:
+            if self.coverage_improvement is not None:
+                raise ValueError(
+                    "Coverage improvement requires both coverage measurements."
+                )
+        else:
+            expected = self.coverage_after - self.coverage_before
+            if self.coverage_improvement is None:
+                raise ValueError(
+                    "Coverage improvement is required for comparable measurements."
+                )
+            if not math.isclose(
+                self.coverage_improvement,
+                expected,
+                abs_tol=0.01,
+            ):
+                raise ValueError(
+                    "Coverage improvement does not match its measurements."
+                )
+        return self
+
     @field_validator(
         "test_generation_validity",
         "coverage_before",
